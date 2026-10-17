@@ -60,8 +60,8 @@ persisted so they survive app restarts.
 | `cmd` | Command to run when the service is down |
 | `restarts` | Cumulative restart count, maintained by the app |
 
-A corrupt or missing settings file falls back to the three built-in defaults
-(`http.server` on 8000 and 8080, and `node server.js` on 3000).
+A corrupt or missing settings file falls back to the built-in default
+(`python -m http.server 8080`, checked every 300s).
 
 ## UI
 
@@ -70,6 +70,9 @@ A corrupt or missing settings file falls back to the three built-in defaults
 - **Settings** — editable table (Name / Port / Interval / URL / Command); Save
   validates that Port and Interval are numbers, rebuilds the rows, and writes the
   config file.
+- **Scan** — lists running `python`/`node` processes that are listening on a local
+  port; select one or more and Add Selected to append them to the config
+  (interval 5s, no health URL).
 - **Open Log** — opens `server_watcher.log` in the default editor.
 
 ## Logging
