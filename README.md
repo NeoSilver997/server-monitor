@@ -71,8 +71,17 @@ A corrupt or missing settings file falls back to the built-in default
   validates that Port and Interval are numbers, rebuilds the rows, and writes the
   config file.
 - **Scan** — lists running `python`/`node` processes that are listening on a local
-  port; select one or more and Add Selected to append them to the config
-  (interval 5s, no health URL).
+  port in a Process / Port / PID / Flag / Command table. Click a column header to
+  sort, click again to reverse. Each row is flagged `main` or `worker`
+  (`is_subprocess()` matches build/test worker command lines such as
+  `start-server.js`, `jest-worker`, `babel-loader`); worker rows are shown in red.
+  Select one or more and Add Selected to append them to the config
+  (interval 60s, no health URL). One row per PID — the lowest listening port wins.
+- **Export Config** — writes the current services to `config_export.csv` and
+  `config_export.json`. The Scan dialog has the same for its results
+  (`scan_export.csv` / `scan_export.json`). CSV is written with a UTF-8 BOM so
+  Excel reads it correctly; fields containing commas are quoted. Each export
+  overwrites the previous file.
 - **Open Log** — opens `server_watcher.log` in the default editor.
 
 ## Logging
