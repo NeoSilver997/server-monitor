@@ -57,7 +57,8 @@ persisted so they survive app restarts.
 | `port` | TCP port to probe on `127.0.0.1` |
 | `interval` | Seconds between checks for this service (min 1) |
 | `url` | Optional health endpoint; blank = port-only check |
-| `cmd` | Command to run when the service is down |
+| `cmd` | Command to run when the service is down — first token is the call path |
+| `cwd` | Working directory used when restarting; blank = the folder the app runs from |
 | `restarts` | Cumulative restart count, maintained by the app |
 
 A corrupt or missing settings file falls back to the built-in default
@@ -67,18 +68,34 @@ A corrupt or missing settings file falls back to the built-in default
 
 - **Main window** — one row per service: name, status, interval, restart count.
 - **Check Now** — runs a check pass immediately, ignoring intervals.
-- **Settings** — editable table (Name / Port / Interval / URL / Command); Save
+- **Settings** — editable table (Name / Port / Interval / URL / Call path / Args / Working
+  dir); a restart runs the command in that working directory, so a service launched with
+  a relative script (e.g. `node server.js`) comes back in its own project folder. Save
   validates that Port and Interval are numbers, rebuilds the rows, and writes the
-  config file.
+  config file. The call path is the first token of the command, so restarting a service
+  uses the same interpreter that was running rather than whatever `python`/`node`
+  resolves from `PATH`. Args is split quote-aware, so paths with spaces survive.
 - **Scan** — lists running `python`/`node` processes that are listening on a local
-  port in a Process / Port / PID / Flag / Command table. Click a column header to
+  port in a Process / Call path / Working dir / Port / PID / Flag / Command table. The
+  call path is the absolute path of the interpreter (`shutil.which`) and becomes the first
+  token of the command when a row is added. Working dir is the process's live working
+  directory, read from its PEB (`process_cwd()`); if that read fails it falls back to the
+  folder implied by an absolute script argument. Click a column header to
   sort, click again to reverse. Each row is flagged `main` or `worker`
   (`is_subprocess()` matches build/test worker command lines such as
   `start-server.js`, `jest-worker`, `babel-loader`); worker rows are shown in red.
   Select one or more and Add Selected to append them to the config
   (interval 60s, no health URL). One row per PID — the lowest listening port wins.
+- **Dashboard** — a frameless overlay window that reads `http://127.0.0.1:8080/metrics`
+  (JSON) every 30s and shows Speed, GPU load, VRAM, GPU temp, Power, PCIe rx, CPU and
+  Disk read as tiles, plus a `servers up N / down N` line (mirrors the main window status)
+  and a state / context line. The window is always on top. The title bar is removed with
+  Win32 style flags but it keeps a taskbar button, so the `-` button minimizes it to
+  the taskbar; drag anywhere on the window to move it. The opacity slider (40–100%) is
+  saved to `dashboard_settings.json` along with the URL and refresh interval. Fetches
+  run on a background thread so the UI stays responsive.
 - **Export Config** — writes the current services to `config_export.csv` and
-  `config_export.json`. The Scan dialog has the same for its results
+  `config_export.json` (columns include the call path). The Scan dialog has the same for its results
   (`scan_export.csv` / `scan_export.json`). CSV is written with a UTF-8 BOM so
   Excel reads it correctly; fields containing commas are quoted. Each export
   overwrites the previous file.
