@@ -1,4 +1,4 @@
-import socket, subprocess, time, json, os, csv, ctypes, queue, threading, shutil
+import socket, subprocess, time, json, os, csv, ctypes, queue, threading, shutil, re
 import urllib.request, urllib.error
 import tkinter as tk
 from tkinter import scrolledtext, messagebox, ttk
@@ -8,6 +8,7 @@ LOG_FILE = "server_watcher.log"
 SCAN_EXPORT = "scan_export"
 CONFIG_EXPORT = "config_export"
 DASHBOARD_FILE = "dashboard_settings.json"
+DAILY_FILE = "daily_extremes.json"
 
 FIELD_GROUPS = {
     "hardware": ("speed", "gpu_load", "vram", "temp", "power", "pcie_rx", "pcie_tx", "pcie_gen",
@@ -369,6 +370,61 @@ def save_dashboard(cfg):
     except OSError:
         pass
 
+def load_daily():
+    if os.path.exists(DAILY_FILE):
+        try:
+            with open(DAILY_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                return data
+        except Exception:
+            pass
+    return {}
+
+def save_daily(data):
+    try:
+        with open(DAILY_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+    except OSError:
+        pass
+
+def first_number(text):
+    # Metric values are display strings like "92%" or "12.3 GB", so take the first number.
+    match = re.search(r"-?\d+(?:\.\d+)?", str(text))
+    return float(match.group(0)) if match else None
+
+daily = load_daily()
+
+def day_record():
+    today = time.strftime("%Y-%m-%d")
+    if daily.get("date") != today:
+        daily["date"] = today
+        daily["fields"] = {}
+        logline(f'[{time.strftime("%H:%M:%S")}] daily extremes started for {today}')
+        save_daily(daily)
+    return daily["fields"]
+
+def record_extremes(key, text):
+    value = first_number(text)
+    if value is None:
+        return
+    fields = day_record()
+    rec = fields.get(key)
+    if rec is None:
+        fields[key] = [value, value]
+        save_daily(daily)
+        return
+    changed = False
+    if value > rec[0]:
+        rec[0] = value
+        logline(f'[{time.strftime("%H:%M:%S")}] {FIELD_TITLES[key]} daily max {clip(text)}')
+        changed = True
+    if value < rec[1]:
+        rec[1] = value
+        changed = True
+    if changed:
+        save_daily(daily)
+
 def fetch_metrics(url, timeout=3.0):
     req = urllib.request.Request(url, method="GET", headers={"Accept": "application/json"})
     with urllib.request.urlopen(req, timeout=timeout) as resp:
@@ -474,7 +530,15 @@ def metric_values(data):
 def clip(text, length=32):
     return text if len(text) <= length else text[:length - 1] + "…"
 
+TILE_W, TILE_H, EDIT_H, CHROME, MAX_COLS = 190, 46, 22, 102, 6
+
 dashboards = []
+settings_order = {}   # field key -> Settings order StringVar, so the two views stay in step
+
+def sync_settings_order(fields):
+    # Renumbers the Settings boxes to match an order changed from the dashboard.
+    for key, var in settings_order.items():
+        var.set(str(fields.index(key) + 1) if key in fields else "")
 
 def refresh_dashboards():
     for win, apply in list(dashboards):
@@ -506,18 +570,13 @@ def open_dashboard():
     win = tk.Toplevel(root)
     win.title("Monitor dashboard")
     win.geometry("400x310")
+    win._width = 400
     win.configure(bg="#161616")
     win.attributes("-alpha", cfg["opacity"])
     win.attributes("-topmost", True)
     win.update()
     hwnd = make_frameless(win)
-    top = tk.Frame(win, bg="#161616")
-    top.pack(fill="x", padx=8, pady=(6, 2))
-    tk.Label(top, text="Monitor", fg="#ddd", bg="#161616", font=("Segoe UI", 10, "bold")).pack(side="left")
-    tk.Button(top, text="x", width=3, bg="#333", fg="white",
-             command=lambda: (close_dashboard(win), win.destroy())).pack(side="right")
-    tk.Button(top, text="-", width=3, bg="#333", fg="white",
-             command=lambda: ctypes.windll.user32.ShowWindow(hwnd, SW_MINIMIZE)).pack(side="right")
+
     def redraw():
         ctypes.windll.user32.RedrawWindow(hwnd, None, None,
                                          RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN)
@@ -539,14 +598,50 @@ def open_dashboard():
         w.bind("<ButtonRelease-1>", lambda _e: redraw())
         for c in w.winfo_children():
             bind_drag(c)
+    top = tk.Frame(win, bg="#161616")
+    top.pack(fill="x", padx=8, pady=(6, 2))
+    tk.Label(top, text="Monitor", fg="#ddd", bg="#161616", font=("Segoe UI", 10, "bold")).pack(side="left")
+    tk.Button(top, text="x", width=3, bg="#333", fg="white",
+             command=lambda: (close_dashboard(win), win.destroy())).pack(side="right")
+    tk.Button(top, text="-", width=3, bg="#333", fg="white",
+             command=lambda: ctypes.windll.user32.ShowWindow(hwnd, SW_MINIMIZE)).pack(side="right")
+    edit = [False]
+    edit_btn = tk.Button(top, text="edit", width=5, bg="#333", fg="white", font=("Segoe UI", 9))
+    edit_btn.pack(side="right")
+
+    def toggle_edit():
+        edit[0] = not edit[0]
+        edit_btn.config(text="done" if edit[0] else "edit")
+        build_tiles()
+
+    edit_btn.config(command=toggle_edit)
     tiles = {}
     grid = tk.Frame(win, bg="#161616")
     grid.pack(fill="both", expand=True, padx=8, pady=2)
 
+    def auto_columns(width):
+        # Tiles are sized to TILE_W, so the column count follows the window width.
+        return max(1, min(MAX_COLS, (width - 16) // TILE_W))
+
+    cols_used = [auto_columns(win._width)]
+
     def disable(key):
         cfg["fields"] = [k for k in cfg["fields"] if k != key]
         save_dashboard(cfg)
+        sync_settings_order(cfg["fields"])
         logline(f'[{time.strftime("%H:%M:%S")}] dashboard field {FIELD_TITLES[key]} off')
+        build_tiles()
+
+    def move(key, delta):
+        keys = cfg["fields"]
+        i = keys.index(key)
+        j = max(0, min(len(keys) - 1, i + delta))
+        if j == i:
+            return
+        keys.insert(j, keys.pop(i))
+        save_dashboard(cfg)
+        sync_settings_order(keys)
+        logline(f'[{time.strftime("%H:%M:%S")}] dashboard tile {FIELD_TITLES[key]} -> #{j + 1}')
         build_tiles()
 
     def build_tiles():
@@ -554,56 +649,47 @@ def open_dashboard():
             w.destroy()
         tiles.clear()
         keys = [k for k in cfg["fields"] if k in FIELD_TITLES]
+        cols = cols_used[0]
+        rows = max(1, (len(keys) + cols - 1) // cols)
+        for c in range(MAX_COLS):
+            grid.columnconfigure(c, weight=1 if c < cols else 0, uniform="tile" if c < cols else "")
+        for r in range(64):
+            grid.rowconfigure(r, weight=1 if r < rows else 0)
         for i, key in enumerate(keys):
             cell = tk.Frame(grid, bg="#1e1e1e")
-            cell.grid(row=i // 2, column=i % 2, sticky="nsew", padx=2, pady=2)
-            title = tk.Label(cell, text=FIELD_TITLES[key], fg="#888", bg="#1e1e1e",
-                             font=("Segoe UI", 8))
-            title.pack(anchor="w", padx=6, pady=(4, 0))
+            cell.grid(row=i // cols, column=i % cols, sticky="nsew", padx=2, pady=2)
+            head = tk.Frame(cell, bg="#1e1e1e")
+            head.pack(fill="x", padx=6, pady=(4, 0))
+            tk.Label(head, text=FIELD_TITLES[key], fg="#888", bg="#1e1e1e",
+                     font=("Segoe UI", 8)).pack(side="left")
+            if edit[0]:
+                tk.Button(head, text="up", width=3, bg="#333", fg="white", font=("Segoe UI", 8),
+                          command=lambda key=key, i=i: move(key, -1)).pack(side="right")
+                tk.Button(head, text="dn", width=3, bg="#333", fg="white", font=("Segoe UI", 8),
+                          command=lambda key=key, i=i: move(key, 1)).pack(side="right")
             lab = tk.Label(cell, text="-", fg="#0f0", bg="#1e1e1e", font=("Segoe UI", 11, "bold"))
             lab.pack(anchor="w", padx=6, pady=(0, 4))
             tiles[key] = lab
-            for w in (cell, title, lab):
+            for w in (cell, head, lab):
                 w.bind("<Double-1>", lambda _e, key=key: disable(key))
-        rows = max(1, (len(keys) + 1) // 2)
-        win.geometry(f"400x{rows * 46 + 102}")
+        height = rows * (TILE_H + (EDIT_H if edit[0] else 0)) + CHROME
+        win.geometry(f"{win._width}x{height}")
         bind_drag(grid)
         redraw()
 
-    def apply_settings():
-        cfg.update(load_dashboard())
-        win.attributes("-alpha", cfg["opacity"])
-        build_tiles()
-
-    apply_settings()
-    dashboards.append((win, apply_settings))
-    win.protocol("WM_DELETE_WINDOW", lambda: (close_dashboard(win), win.destroy()))
     servers = tk.Label(win, text="-", fg="#ddd", bg="#161616", font=("Segoe UI", 9))
     servers.pack(anchor="w", padx=8, pady=(2, 0))
     stamp = tk.Label(win, text="-", fg="#ddd", bg="#161616", font=("Segoe UI", 9))
     stamp.pack(anchor="w", padx=8, pady=(0, 2))
-    def on_refresh(_event=None):
-        try:
-            cfg["refresh"] = max(1, int(float(refresh_var.get())))
-        except ValueError:
-            return
-        save_dashboard(cfg)
-    row2 = tk.Frame(win, bg="#161616")
-    row2.pack(fill="x", padx=8, pady=(0, 6))
-    tk.Label(row2, text="refresh", fg="#888", bg="#161616", font=("Segoe UI", 8)).pack(side="left")
-    refresh_var = tk.StringVar(value=str(cfg["refresh"]))
-    spin = tk.Spinbox(row2, from_=5, to=600, textvariable=refresh_var, width=6, bg="#1e1e1e",
-                      fg="#ddd", buttonbackground="#333", insertbackground="white", command=on_refresh)
-    spin.pack(side="left")
-    spin.bind("<KeyRelease>", on_refresh)
-    tk.Label(row2, text="s", fg="#888", bg="#161616", font=("Segoe UI", 8)).pack(side="left")
-    bind_drag(win)
+
     results = queue.Queue()
+
     def worker():
         try:
             results.put((None, metric_values(fetch_metrics(cfg["url"]))))
         except Exception as e:
             results.put((str(e), None))
+
     def render(err, vals):
         up, down = server_counts()
         servers.config(text=f"servers  up {up} / down {down}")
@@ -614,7 +700,9 @@ def open_dashboard():
         for key, text in vals.items():
             if key in tiles:
                 tiles[key].config(text=clip(text))
+                record_extremes(key, text)
         stamp.config(text=f'updated {time.strftime("%H:%M:%S")}')
+
     def drain():
         try:
             while True:
@@ -622,9 +710,64 @@ def open_dashboard():
         except queue.Empty:
             pass
         win.after(1000, drain)
-    def tick():
+
+    timer = [None]
+
+    def fetch_now():
         threading.Thread(target=worker, daemon=True).start()
-        win.after(int(cfg["refresh"] * 1000), tick)
+
+    def arm():
+        # Re-arming lets a changed refresh interval take effect without waiting for the old delay.
+        if timer[0] is not None:
+            win.after_cancel(timer[0])
+        timer[0] = win.after(int(cfg["refresh"] * 1000), tick)
+
+    def tick():
+        timer[0] = None
+        fetch_now()
+        arm()
+
+    def apply_settings():
+        cfg.update(load_dashboard())
+        win.attributes("-alpha", cfg["opacity"])
+        build_tiles()
+
+    def on_refresh(_event=None):
+        try:
+            cfg["refresh"] = max(1, int(float(refresh_var.get())))
+        except ValueError:
+            return
+        save_dashboard(cfg)
+        arm()
+
+    apply_settings()
+    dashboards.append((win, apply_settings))
+    win.protocol("WM_DELETE_WINDOW", lambda: (close_dashboard(win), win.destroy()))
+
+    row2 = tk.Frame(win, bg="#161616")
+    row2.pack(fill="x", padx=8, pady=(0, 6))
+    tk.Label(row2, text="refresh", fg="#888", bg="#161616", font=("Segoe UI", 8)).pack(side="left")
+    refresh_var = tk.StringVar(value=str(cfg["refresh"]))
+    spin = tk.Spinbox(row2, from_=5, to=600, textvariable=refresh_var, width=6, bg="#1e1e1e",
+                      fg="#ddd", buttonbackground="#333", insertbackground="white", command=on_refresh)
+    spin.pack(side="left")
+    spin.bind("<KeyRelease>", on_refresh)
+    tk.Label(row2, text="s", fg="#888", bg="#161616", font=("Segoe UI", 8)).pack(side="left")
+    tk.Button(row2, text="refresh now", bg="#333", fg="white", font=("Segoe UI", 8),
+             command=fetch_now).pack(side="left", padx=(8, 0))
+
+    def on_configure(event):
+        # Only rebuild when the width change actually alters the column count, otherwise
+        # the geometry() call in build_tiles would re-fire Configure and recurse.
+        if event.widget is not win or event.width <= 1 or event.width == win._width:
+            return
+        win._width = event.width
+        if auto_columns(event.width) != cols_used[0]:
+            cols_used[0] = auto_columns(event.width)
+            build_tiles()
+
+    win.bind("<Configure>", on_configure)
+    bind_drag(win)
     tick()
     drain()
     return win
@@ -740,23 +883,35 @@ def open_settings():
     win.title("Settings")
     win.geometry("1180x700")
     win.configure(bg="#1e1e1e")
+
+    def section(title, expand=False):
+        # Title is packed, so the content area must be a separate frame: a widget
+        # can't mix pack and grid in the same parent.
+        box = tk.Frame(win, bg="#1e1e1e", highlightbackground="#333", highlightthickness=1)
+        box.pack(fill="both" if expand else "x", padx=10, pady=(6, 2))
+        tk.Label(box, text=title, fg="#ddd", bg="#1e1e1e", font=("Segoe UI", 9, "bold")).pack(anchor="w", padx=8, pady=(4, 2))
+        body = tk.Frame(box, bg="#1e1e1e")
+        body.pack(fill="both" if expand else "x", padx=8, pady=(0, 4))
+        return body
+
     cols = ("Name", "Host", "Port", "Interval", "URL (optional)", "Call path", "Args", "Working dir", "Auto restart")
     widths = (12, 14, 8, 8, 16, 30, 20, 26, 10)
-    tree = tk.Frame(win, bg="#1e1e1e")
-    tree.pack(fill="both", expand=True, padx=10, pady=10)
+    tree = section("Services", expand=True)
     for i, c in enumerate(cols):
-        tk.Label(tree, text=c, fg="#ddd", bg="#1e1e1e", width=widths[i], anchor="w").grid(row=0, column=i)
+        tk.Label(tree, text=c, fg="#ddd", bg="#1e1e1e", width=widths[i], anchor="w",
+                 font=("Segoe UI", 8, "bold")).grid(row=0, column=i)
     entries = []
 
     def make_row(svc):
         r = len(entries) + 1
+        bg = "#262626" if r % 2 else "#2a2a2a"
         row_e = []
         cmd = svc.get("cmd", [])
         vals = [svc.get("name", ""), svc.get("host") or "127.0.0.1", str(svc.get("port", "")),
                 str(svc.get("interval", 60)), svc.get("url", ""), cmd[0] if cmd else "",
                 " ".join(cmd[1:]), svc.get("cwd", "")]
         for c, val in enumerate(vals):
-            e = tk.Entry(tree, bg="#2a2a2a", fg="white", width=widths[c])
+            e = tk.Entry(tree, bg=bg, fg="white", width=widths[c])
             e.grid(row=r, column=c, pady=2, padx=1)
             e.insert(0, val)
             row_e.append(e)
@@ -776,14 +931,28 @@ def open_settings():
 
     dash_cfg = load_dashboard()
 
+    def order_value(var):
+        try:
+            return int(float(var.get()))
+        except ValueError:
+            return 0
+
     def apply_fields():
-        dash_cfg["fields"] = [key for keys in FIELD_GROUPS.values() for key in keys if field_vars[key].get()]
+        # The number is the tile order; blank or 0 hides the field. Ties keep group order.
+        shown = [k for keys in FIELD_GROUPS.values() for k in keys if order_value(field_order[k]) > 0]
+        dash_cfg["fields"] = sorted(shown, key=lambda k: order_value(field_order[k]))
         save_dashboard(dash_cfg)
         refresh_dashboards()
 
+    def update_count():
+        count_label.config(text=f"{sum(1 for v in field_order.values() if order_value(v) > 0)} selected")
+
     def apply_field(key):
         apply_fields()
-        logline(f'[{time.strftime("%H:%M:%S")}] dashboard field {FIELD_TITLES[key]} {"on" if field_vars[key].get() else "off"}')
+        update_count()
+        n = order_value(field_order[key])
+        logline(f'[{time.strftime("%H:%M:%S")}] dashboard field {FIELD_TITLES[key]} '
+                + (f"order {n}" if n else "off"))
 
     def apply_opacity(_event=None):
         try:
@@ -796,9 +965,10 @@ def open_settings():
         refresh_dashboards()
         logline(f'[{time.strftime("%H:%M:%S")}] dashboard opacity {value}%')
 
-    drow = tk.Frame(win, bg="#1e1e1e")
-    drow.pack(fill="x", padx=10, pady=(4, 2))
-    tk.Label(drow, text="Dashboard opacity", fg="#ddd", bg="#1e1e1e", font=("Segoe UI", 9, "bold")).pack(side="left")
+    dbox = section("Dashboard")
+    drow = tk.Frame(dbox, bg="#1e1e1e")
+    drow.pack(fill="x", padx=8, pady=(0, 4))
+    tk.Label(drow, text="Opacity", fg="#ddd", bg="#1e1e1e", font=("Segoe UI", 9)).pack(side="left")
     opacity_var = tk.StringVar(value=str(int(round(dash_cfg["opacity"] * 100))))
     spin = tk.Spinbox(drow, from_=40, to=100, increment=5, textvariable=opacity_var, width=6,
                       bg="#2a2a2a", fg="white", buttonbackground="#333", insertbackground="white",
@@ -806,23 +976,32 @@ def open_settings():
     spin.pack(side="left", padx=(8, 0))
     spin.bind("<KeyRelease>", apply_opacity)
     tk.Label(drow, text="%", fg="#888", bg="#1e1e1e", font=("Segoe UI", 8)).pack(side="left")
+    tk.Label(drow, text="applies immediately", fg="#888", bg="#1e1e1e",
+             font=("Segoe UI", 8)).pack(side="right", padx=8)
 
-    tk.Label(win, text="Dashboard fields (tick to show as tiles)", fg="#ddd", bg="#1e1e1e",
-             font=("Segoe UI", 9, "bold")).pack(anchor="w", padx=10)
-    panel = tk.Frame(win, bg="#1e1e1e")
-    panel.pack(fill="x", padx=10, pady=(4, 6))
-    field_vars = {}
+    panel = section("Dashboard fields (number = tile order, blank or 0 hides)")
+    count_label = tk.Label(panel, text="", fg="#888", bg="#1e1e1e", font=("Segoe UI", 8, "bold"))
+    count_label.pack(anchor="w", padx=8, pady=(0, 2))
+    field_order = {}
 
     for group, keys in FIELD_GROUPS.items():
-        tk.Label(panel, text=group, fg="#888", bg="#1e1e1e", font=("Segoe UI", 8, "bold")).pack(anchor="w", pady=(4, 0))
+        tk.Label(panel, text=group, fg="#888", bg="#1e1e1e", font=("Segoe UI", 8, "bold")).pack(anchor="w", padx=8, pady=(4, 0))
         for i in range(0, len(keys), 6):
             line = tk.Frame(panel, bg="#1e1e1e")
-            line.pack(fill="x", pady=1)
+            line.pack(fill="x", padx=8, pady=1)
             for key in keys[i:i + 6]:
-                var = tk.BooleanVar(value=key in dash_cfg["fields"])
-                field_vars[key] = var
-                tk.Checkbutton(line, text=FIELD_TITLES[key], variable=var, command=lambda key=key: apply_field(key),
-                               bg="#1e1e1e", fg="white", selectcolor="#2a2a2a", font=("Segoe UI", 8)).pack(side="left", padx=6)
+                n = dash_cfg["fields"].index(key) + 1 if key in dash_cfg["fields"] else 0
+                var = tk.StringVar(value=str(n) if n else "")
+                field_order[key] = var
+                settings_order[key] = var
+                cell = tk.Frame(line, bg="#1e1e1e")
+                cell.pack(side="left", padx=4)
+                tk.Spinbox(cell, from_=0, to=99, textvariable=var, width=3, bg="#2a2a2a", fg="white",
+                           buttonbackground="#333", insertbackground="white", font=("Segoe UI", 8),
+                           command=lambda key=key: apply_field(key)).pack(side="left")
+                tk.Label(cell, text=FIELD_TITLES[key], fg="white", bg="#1e1e1e",
+                         font=("Segoe UI", 8)).pack(side="left", padx=(4, 0))
+    update_count()
 
     def on_save():
         new_services = []
@@ -860,9 +1039,13 @@ def open_settings():
         logline(f'[{time.strftime("%H:%M:%S")}] settings saved')
         win.destroy()
     btns = tk.Frame(win, bg="#1e1e1e")
-    btns.pack(pady=5)
-    tk.Button(btns, text="Save", command=on_save, bg="#333", fg="white").pack(side="left", padx=4)
-    tk.Button(btns, text="Add Row", command=add_row, bg="#333", fg="white").pack(side="left", padx=4)
+    btns.pack(fill="x", padx=10, pady=6)
+    tk.Button(btns, text="Save", command=on_save, bg="#333", fg="white", width=10,
+             font=("Segoe UI", 9)).pack(side="left", padx=4)
+    tk.Button(btns, text="Add Row", command=add_row, bg="#333", fg="white", width=10,
+             font=("Segoe UI", 9)).pack(side="left", padx=4)
+    tk.Label(btns, text="dashboard changes apply without Save", fg="#888", bg="#1e1e1e",
+            font=("Segoe UI", 8)).pack(side="right", padx=8)
     win.geometry(f"1180x{max(700, win.winfo_reqheight())}")
 
 def open_scanner():

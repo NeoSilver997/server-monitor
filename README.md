@@ -87,13 +87,17 @@ A corrupt or missing settings file falls back to the built-in default
   resolves from `PATH`. Args is split quote-aware, so paths with spaces survive.
   **Add Row** appends a blank service row (host `127.0.0.1`, interval 60, auto restart on)
   that is written to the config on the next Save. A row left completely blank is skipped, and
-  Save names the row when Name, Port or Interval is missing or non-numeric. The window sizes
-  itself to the picker so the Save / Add Row buttons are always visible.
+  Save names the row when Name, Port or Interval is missing or non-numeric. The window is
+  grouped into bordered sections (Services / Dashboard / Dashboard fields) and service rows
+  use alternating shading, so the table reads as a grid rather than a wall of inputs. The
+  window sizes itself to the picker so the Save / Add Row buttons are always visible.
   Below the table is a **Dashboard opacity** number (40–100%) and a **Dashboard fields**
-  picker — tick any of the 62 fields exposed by `/metrics` (grouped as hardware / engine /
-  live / totals / conversation_cache / hardware_static) to choose which tiles the dashboard
-  shows. Both apply straight away: the value is written to `dashboard_settings.json` and any
-  open dashboard is recoloured and rebuilt without pressing Save.
+  picker — each of the 62 fields exposed by `/metrics` (grouped as hardware / engine /
+  live / totals / conversation_cache / hardware_static) has a small number box that is its
+  tile order: `1` is the first tile, `2` the second, and so on. Blank or `0` hides the field.
+  The picker shows a live `N selected` count. Both apply straight away: the order is written
+  to `dashboard_settings.json` and any open dashboard is recoloured and rebuilt without
+  pressing Save.
 - **Scan** — lists running `python`/`node` processes that are listening on a local
   port in a Process / Call path / Working dir / Port / PID / Flag / Command table. The
   call path is the absolute path of the interpreter (`shutil.which`) and becomes the first
@@ -106,20 +110,30 @@ A corrupt or missing settings file falls back to the built-in default
   Select one or more and Add Selected to append them to the config
   (interval 60s, no health URL). One row per PID — the lowest listening port wins.
 - **Dashboard** — a frameless overlay window that reads `http://127.0.0.1:8080/metrics`
-  (JSON) every 30s and shows one tile per field selected in the Settings picker. The default
+  (JSON) every 30s and shows one tile per field that has a number in the Settings picker. The default
   selection is Speed, GPU load, VRAM, GPU temp, Power, PCIe rx, CPU, Disk read, State and
-  Context used. VRAM and RAM show usage as a percentage of the total. Below the tiles: a
-  `servers up N / down N` line (mirrors the main window status) and an `updated HH:MM:SS`
-  line that shows the fetch error if the endpoint is unreachable. Long values (model name,
-  GPU name) are truncated to fit the tile. The window is always on top and grows with the
-  number of selected tiles. The title bar is removed with Win32 style flags but it keeps a
-  taskbar button, so the `-` button minimizes it to the taskbar. Drag anywhere, including
-  across the tiles, to move it — the window is force-repainted after each move so the tiles
-  redraw instead of leaving stale pixels. Opacity is a number in Settings; the window keeps
-  the refresh spinbox (5–600s, applied on the next tick). Both, with the URL and the field
+  Context used. VRAM and RAM show usage as a percentage of the total. Tiles are laid out in a
+  grid that auto-arranges to fit the window width — the column count follows the width
+  (1–6 columns, one tile per 190px), so resizing reflows the tiles and the window height
+  adjusts to the number of rows. `edit` in the title bar adds `up` / `dn` buttons to each tile
+  header to reorder them; the order is the `fields` list in `dashboard_settings.json`, so it
+  survives restarts and is the same order the number boxes in the Settings picker show.
+  Below the tiles: a `servers up N / down N` line (mirrors the main window status)
+  and an `updated HH:MM:SS` line that shows the fetch error if the endpoint is unreachable.
+  Long values (model name, GPU name) are truncated to fit the tile. The window is always on
+  top. The title bar is removed with Win32 style flags but it keeps a taskbar button, so the
+  `-` button minimizes it to the taskbar. Drag anywhere, including across the tiles, to move
+  it — the window is force-repainted after each move so the tiles redraw instead of leaving
+  stale pixels. Opacity is a number in Settings; the bottom row keeps the refresh spinbox
+  (5–600s, re-armed immediately when changed) and a **refresh now** button that fetches
+  straight away instead of waiting for the next tick. Both, with the URL and the field
   selection, are saved to `dashboard_settings.json`. Double-click a tile to drop it from the
-  dashboard — the selection is saved (the Settings picker shows it unticked) and the window
-  shrinks. Fetches
+  dashboard — the selection is saved (its number in the Settings picker is cleared) and the window
+  shrinks. Each day the dashboard tracks the max and min seen for every tile and stores them
+  per date in `daily_extremes.json`; the record resets on the first reading of a new day. When
+  a value hits a new daily max, the log gets a line such as
+  `14:02:11 GPU load daily max 80%`. Only numeric values are tracked, so text fields like
+  State or the model name are skipped. Fetches
   run on a background thread so the UI stays responsive.
 
   Fields available in the picker:
@@ -141,8 +155,8 @@ A corrupt or missing settings file falls back to the built-in default
 
 ## Logging
 
-Every restart and settings save is written to both the in-window log pane and
-`server_watcher.log`. The log is append-only and is not rotated.
+Every restart, settings save, dashboard change and new daily max is written to both the
+in-window log pane and `server_watcher.log`. The log is append-only and is not rotated.
 
 ## Known limitations
 
