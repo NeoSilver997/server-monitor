@@ -1,0 +1,9 @@
+# Runtime state
+server_watcher_settings.json
+server_watcher_settings.json.bak
+dashboard_settings.json
+daily_extremes.json
+server_watcher.log
+scan_export.csv
+scan_export.json
+__pycache__/

@@ -1,0 +1,31 @@
+[
+  {
+    "name": "Example Node API",
+    "host": "127.0.0.1",
+    "port": 4001,
+    "interval": 60,
+    "url": "",
+    "cmd": [
+      "C:\\Program Files\\nodejs\\node.exe",
+      "server.js"
+    ],
+    "cwd": "C:\\AI_Server\\Coding\\ExampleProject",
+    "auto_restart": true,
+    "restarts": 0
+  },
+  {
+    "name": "Example Python Service",
+    "host": "127.0.0.1",
+    "port": 8080,
+    "interval": 300,
+    "url": "http://127.0.0.1:8080/metrics",
+    "cmd": [
+      "C:\\Users\\example\\AppData\\Local\\Programs\\Python\\Python312\\python.exe",
+      "main.py",
+      "--listen"
+    ],
+    "cwd": "C:\\AI_Server\\Coding\\ExampleService",
+    "auto_restart": false,
+    "restarts": 0
+  }
+]
