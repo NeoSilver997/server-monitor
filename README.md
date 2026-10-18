@@ -78,26 +78,30 @@ A corrupt or missing settings file falls back to the built-in default
   alternate shading, status is green for RUNNING and red for DOWN, and a remote `host` is
   shown in blue.
 - **Check Now** — runs a check pass immediately, ignoring intervals.
-- **Settings** — editable table (Name / Host / Port / Interval / URL / Call path / Args /
-  Working dir / Auto restart); a restart runs the command in that working directory, so a service launched with
-  a relative script (e.g. `node server.js`) comes back in its own project folder. Save
-  validates that Port and Interval are numbers, rebuilds the rows, and writes the
-  config file. The call path is the first token of the command, so restarting a service
-  uses the same interpreter that was running rather than whatever `python`/`node`
-  resolves from `PATH`. Args is split quote-aware, so paths with spaces survive.
-  **Add Row** appends a blank service row (host `127.0.0.1`, interval 60, auto restart on)
-  that is written to the config on the next Save. A row left completely blank is skipped, and
-  Save names the row when Name, Port or Interval is missing or non-numeric. The window is
-  grouped into bordered sections (Services / Dashboard / Dashboard fields) and service rows
-  use alternating shading, so the table reads as a grid rather than a wall of inputs. The
-  window sizes itself to the picker so the Save / Add Row buttons are always visible.
-  Below the table is a **Dashboard opacity** number (40–100%) and a **Dashboard fields**
-  picker — each of the 62 fields exposed by `/metrics` (grouped as hardware / engine /
-  live / totals / conversation_cache / hardware_static) has a small number box that is its
-  tile order: `1` is the first tile, `2` the second, and so on. Blank or `0` hides the field.
-  The picker shows a live `N selected` count. Both apply straight away: the order is written
-  to `dashboard_settings.json` and any open dashboard is recoloured and rebuilt without
-  pressing Save.
+- **Settings** — two tabs with buttons across the top: **Services** and **Dashboard**. Only the
+  selected tab is shown, and the active button is highlighted.
+  - **Services tab** — editable table (Name / Host / Port / Interval / URL / Call path / Args /
+    Working dir / Auto restart) with the **Save** and **Add Row** buttons. A restart runs the
+    command in that working directory, so a service launched with a relative script
+    (e.g. `node server.js`) comes back in its own project folder. Save validates that Port and
+    Interval are numbers, rebuilds the rows, and writes the config file. The call path is the
+    first token of the command, so restarting a service uses the same interpreter that was
+    running rather than whatever `python`/`node` resolves from `PATH`. Args is split
+    quote-aware, so paths with spaces survive. **Add Row** appends a blank service row
+    (host `127.0.0.1`, interval 60, auto restart on) that is written to the config on the next
+    Save. A row left completely blank is skipped, and Save names the row when Name, Port or
+    Interval is missing or non-numeric.
+  - **Dashboard tab** — **Metrics URL**, **Opacity** (40–100%), **Refresh** (5–600s) and the
+    **Dashboard fields** picker. Each of the 62 fields exposed by `/metrics` (grouped as
+    hardware / engine / live / totals / conversation_cache / hardware_static) has a small number
+    box that is its tile order: `1` is the first tile, `2` the second, and so on. Blank or `0`
+    hides the field. The picker shows a live `N selected` count. Everything on this tab applies
+    straight away — no Save — and writes `dashboard_settings.json`, so any open dashboard is
+    rebuilt immediately. The numbers stay in step with the dashboard edit mode: reordering a
+    tile there renumbers the boxes here.
+  Both tabs use bordered sections and alternating row shading, so the table reads as a grid
+  rather than a wall of inputs. The window sizes itself to the picker so the buttons are always
+  visible.
 - **Scan** — lists running `python`/`node` processes that are listening on a local
   port in a Process / Call path / Working dir / Port / PID / Flag / Command table. The
   call path is the absolute path of the interpreter (`shutil.which`) and becomes the first
@@ -124,10 +128,10 @@ A corrupt or missing settings file falls back to the built-in default
   top. The title bar is removed with Win32 style flags but it keeps a taskbar button, so the
   `-` button minimizes it to the taskbar. Drag anywhere, including across the tiles, to move
   it — the window is force-repainted after each move so the tiles redraw instead of leaving
-  stale pixels. Opacity is a number in Settings; the bottom row keeps the refresh spinbox
-  (5–600s, re-armed immediately when changed) and a **refresh now** button that fetches
-  straight away instead of waiting for the next tick. Both, with the URL and the field
-  selection, are saved to `dashboard_settings.json`. Double-click a tile to drop it from the
+  stale pixels. The bottom row is buttons only — **refresh now** fetches straight away instead
+  of waiting for the next tick. Opacity, the refresh interval, the URL and the field selection
+  live on the Settings Dashboard tab and are saved to `dashboard_settings.json` as soon as they
+  change, which re-arms the timer for every open dashboard. Double-click a tile to drop it from the
   dashboard — the selection is saved (its number in the Settings picker is cleared) and the window
   shrinks. Each day the dashboard tracks the max and min seen for every tile and stores them
   per date in `daily_extremes.json`; the record resets on the first reading of a new day. When

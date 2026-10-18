@@ -730,15 +730,8 @@ def open_dashboard():
     def apply_settings():
         cfg.update(load_dashboard())
         win.attributes("-alpha", cfg["opacity"])
-        build_tiles()
-
-    def on_refresh(_event=None):
-        try:
-            cfg["refresh"] = max(1, int(float(refresh_var.get())))
-        except ValueError:
-            return
-        save_dashboard(cfg)
         arm()
+        build_tiles()
 
     apply_settings()
     dashboards.append((win, apply_settings))
@@ -746,15 +739,8 @@ def open_dashboard():
 
     row2 = tk.Frame(win, bg="#161616")
     row2.pack(fill="x", padx=8, pady=(0, 6))
-    tk.Label(row2, text="refresh", fg="#888", bg="#161616", font=("Segoe UI", 8)).pack(side="left")
-    refresh_var = tk.StringVar(value=str(cfg["refresh"]))
-    spin = tk.Spinbox(row2, from_=5, to=600, textvariable=refresh_var, width=6, bg="#1e1e1e",
-                      fg="#ddd", buttonbackground="#333", insertbackground="white", command=on_refresh)
-    spin.pack(side="left")
-    spin.bind("<KeyRelease>", on_refresh)
-    tk.Label(row2, text="s", fg="#888", bg="#161616", font=("Segoe UI", 8)).pack(side="left")
     tk.Button(row2, text="refresh now", bg="#333", fg="white", font=("Segoe UI", 8),
-             command=fetch_now).pack(side="left", padx=(8, 0))
+             command=fetch_now).pack(side="left")
 
     def on_configure(event):
         # Only rebuild when the width change actually alters the column count, otherwise
@@ -884,19 +870,40 @@ def open_settings():
     win.geometry("1180x700")
     win.configure(bg="#1e1e1e")
 
-    def section(title, expand=False):
+    def section(title, parent, expand=False):
         # Title is packed, so the content area must be a separate frame: a widget
         # can't mix pack and grid in the same parent.
-        box = tk.Frame(win, bg="#1e1e1e", highlightbackground="#333", highlightthickness=1)
+        box = tk.Frame(parent, bg="#1e1e1e", highlightbackground="#333", highlightthickness=1)
         box.pack(fill="both" if expand else "x", padx=10, pady=(6, 2))
         tk.Label(box, text=title, fg="#ddd", bg="#1e1e1e", font=("Segoe UI", 9, "bold")).pack(anchor="w", padx=8, pady=(4, 2))
         body = tk.Frame(box, bg="#1e1e1e")
         body.pack(fill="both" if expand else "x", padx=8, pady=(0, 4))
         return body
 
+    tabs = {}
+    tab_buttons = {}
+
+    def show_tab(name):
+        for key, frame in tabs.items():
+            if key == name:
+                frame.pack(fill="both", expand=True)
+            else:
+                frame.pack_forget()
+        for key, b in tab_buttons.items():
+            b.config(bg="#3a5f8a" if key == name else "#333")
+
+    bar = tk.Frame(win, bg="#1e1e1e")
+    bar.pack(fill="x", padx=10, pady=(8, 0))
+    for name in ("Services", "Dashboard"):
+        tabs[name] = tk.Frame(win, bg="#1e1e1e")
+        b = tk.Button(bar, text=name, width=12, bg="#333", fg="white", font=("Segoe UI", 9, "bold"),
+                      command=lambda name=name: show_tab(name))
+        tab_buttons[name] = b
+        b.pack(side="left", padx=(0, 6))
+
     cols = ("Name", "Host", "Port", "Interval", "URL (optional)", "Call path", "Args", "Working dir", "Auto restart")
     widths = (12, 14, 8, 8, 16, 30, 20, 26, 10)
-    tree = section("Services", expand=True)
+    tree = section("Services", tabs["Services"], expand=True)
     for i, c in enumerate(cols):
         tk.Label(tree, text=c, fg="#ddd", bg="#1e1e1e", width=widths[i], anchor="w",
                  font=("Segoe UI", 8, "bold")).grid(row=0, column=i)
@@ -965,9 +972,39 @@ def open_settings():
         refresh_dashboards()
         logline(f'[{time.strftime("%H:%M:%S")}] dashboard opacity {value}%')
 
-    dbox = section("Dashboard")
+    def apply_url(_event=None):
+        url = url_var.get().strip()
+        if not url:
+            return
+        dash_cfg["url"] = url
+        save_dashboard(dash_cfg)
+        refresh_dashboards()
+        logline(f'[{time.strftime("%H:%M:%S")}] dashboard url {url}')
+
+    def apply_refresh(_event=None):
+        try:
+            value = max(1, int(float(refresh_var.get())))
+        except ValueError:
+            return
+        dash_cfg["refresh"] = value
+        refresh_var.set(str(value))
+        save_dashboard(dash_cfg)
+        refresh_dashboards()
+        logline(f'[{time.strftime("%H:%M:%S")}] dashboard refresh {value}s')
+
+    dbox = section("Dashboard", tabs["Dashboard"])
+
+    urow = tk.Frame(dbox, bg="#1e1e1e")
+    urow.pack(fill="x", pady=(0, 4))
+    tk.Label(urow, text="Metrics URL", fg="#ddd", bg="#1e1e1e", font=("Segoe UI", 9)).pack(side="left")
+    url_var = tk.StringVar(value=dash_cfg["url"])
+    url_entry = tk.Entry(urow, textvariable=url_var, width=44, bg="#2a2a2a", fg="white",
+                         insertbackground="white", font=("Segoe UI", 9))
+    url_entry.pack(side="left", padx=(8, 0))
+    url_entry.bind("<KeyRelease>", apply_url)
+
     drow = tk.Frame(dbox, bg="#1e1e1e")
-    drow.pack(fill="x", padx=8, pady=(0, 4))
+    drow.pack(fill="x", pady=(0, 4))
     tk.Label(drow, text="Opacity", fg="#ddd", bg="#1e1e1e", font=("Segoe UI", 9)).pack(side="left")
     opacity_var = tk.StringVar(value=str(int(round(dash_cfg["opacity"] * 100))))
     spin = tk.Spinbox(drow, from_=40, to=100, increment=5, textvariable=opacity_var, width=6,
@@ -976,10 +1013,20 @@ def open_settings():
     spin.pack(side="left", padx=(8, 0))
     spin.bind("<KeyRelease>", apply_opacity)
     tk.Label(drow, text="%", fg="#888", bg="#1e1e1e", font=("Segoe UI", 8)).pack(side="left")
-    tk.Label(drow, text="applies immediately", fg="#888", bg="#1e1e1e",
+    rrow = tk.Frame(dbox, bg="#1e1e1e")
+    rrow.pack(fill="x", pady=(0, 4))
+    tk.Label(rrow, text="Refresh", fg="#ddd", bg="#1e1e1e", font=("Segoe UI", 9)).pack(side="left")
+    refresh_var = tk.StringVar(value=str(dash_cfg["refresh"]))
+    rspin = tk.Spinbox(rrow, from_=5, to=600, textvariable=refresh_var, width=6, bg="#2a2a2a",
+                       fg="white", buttonbackground="#333", insertbackground="white",
+                       font=("Segoe UI", 9), command=apply_refresh)
+    rspin.pack(side="left", padx=(8, 0))
+    rspin.bind("<KeyRelease>", apply_refresh)
+    tk.Label(rrow, text="s", fg="#888", bg="#1e1e1e", font=("Segoe UI", 8)).pack(side="left")
+    tk.Label(rrow, text="applies immediately", fg="#888", bg="#1e1e1e",
              font=("Segoe UI", 8)).pack(side="right", padx=8)
 
-    panel = section("Dashboard fields (number = tile order, blank or 0 hides)")
+    panel = section("Dashboard fields (number = tile order, blank or 0 hides)", tabs["Dashboard"], expand=True)
     count_label = tk.Label(panel, text="", fg="#888", bg="#1e1e1e", font=("Segoe UI", 8, "bold"))
     count_label.pack(anchor="w", padx=8, pady=(0, 2))
     field_order = {}
@@ -1038,7 +1085,7 @@ def open_settings():
         rebuild_rows()
         logline(f'[{time.strftime("%H:%M:%S")}] settings saved')
         win.destroy()
-    btns = tk.Frame(win, bg="#1e1e1e")
+    btns = tk.Frame(tabs["Services"], bg="#1e1e1e")
     btns.pack(fill="x", padx=10, pady=6)
     tk.Button(btns, text="Save", command=on_save, bg="#333", fg="white", width=10,
              font=("Segoe UI", 9)).pack(side="left", padx=4)
@@ -1046,7 +1093,11 @@ def open_settings():
              font=("Segoe UI", 9)).pack(side="left", padx=4)
     tk.Label(btns, text="dashboard changes apply without Save", fg="#888", bg="#1e1e1e",
             font=("Segoe UI", 8)).pack(side="right", padx=8)
-    win.geometry(f"1180x{max(700, win.winfo_reqheight())}")
+    # Both tabs contribute to the requested height, so size for the taller one and
+    # switching tabs never clips the picker.
+    height = max(700, win.winfo_reqheight() + max(f.winfo_reqheight() for f in tabs.values()))
+    show_tab("Services")
+    win.geometry(f"1180x{height}")
 
 def open_scanner():
     try:
