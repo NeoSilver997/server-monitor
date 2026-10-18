@@ -53,6 +53,7 @@ WS_CAPTION, WS_BORDER, WS_MINIMIZEBOX = 0x00C00000, 0x00800000, 0x00020000
 WS_EX_APPWINDOW, WS_EX_TOOLWINDOW = 0x00040000, 0x00000080
 SW_MINIMIZE, SW_RESTORE = 2, 9
 SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SWP_FRAMECHANGED = 0x0002, 0x0001, 0x0004, 0x0020
+RDW_INVALIDATE, RDW_UPDATENOW, RDW_ALLCHILDREN = 0x0001, 0x0100, 0x0080
 PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_VM_READ = 0x1000, 0x0010
 
 SCAN_EXES = ("python.exe", "pythonw.exe", "node.exe")
@@ -397,20 +398,20 @@ def metric_values(data):
         return round(v, digits) if v < 100 else round(v)
 
     def pct(part, whole):
-        return f"{round(part / whole * 100)}%" if part and whole else "-"
+        return f"{round(part / whole * 100)}%" if whole and part is not None else "-"
 
     speed = live.get("tok_s") if live.get("tok_s") is not None else hw.get("tok_s")
     return {
         "speed": show(speed, " tok/s"),
         "gpu_load": show(hw.get("gpu_util"), "%"),
-        "vram": f'{mib(hw.get("gpu_mem_used"))} / {mib(hw.get("gpu_mem_total"))} MiB',
+        "vram": pct(hw.get("gpu_mem_used"), hw.get("gpu_mem_total")),
         "temp": show(hw.get("gpu_temp"), " C"),
         "power": f'{show(hw.get("gpu_power"))} / {show(hw.get("gpu_power_limit"))} W',
         "pcie_rx": show(hw.get("gpu_pcie_rx_mb"), " MB/s"),
         "pcie_tx": show(hw.get("gpu_pcie_tx_mb"), " MB/s"),
         "pcie_gen": f'gen {show(hw.get("gpu_pcie_gen"))} max {show(hw.get("gpu_pcie_gen_max"))} x{show(hw.get("gpu_pcie_width"))}',
         "cpu": show(hw.get("cpu"), "%"),
-        "ram": f'{mib(hw.get("ram_used"))} / {mib(hw.get("ram_total"))} MiB',
+        "ram": pct(hw.get("ram_used"), hw.get("ram_total")),
         "disk_read": show(hw.get("disk_read_mb"), " MB/s"),
         "disk_write": show(hw.get("disk_write_mb"), " MB/s"),
 
@@ -476,10 +477,10 @@ def clip(text, length=32):
 dashboards = []
 
 def refresh_dashboards():
-    for win, build in list(dashboards):
+    for win, apply in list(dashboards):
         try:
             if win.winfo_exists():
-                build()
+                apply()
         except Exception:
             pass
 
@@ -517,50 +518,70 @@ def open_dashboard():
              command=lambda: (close_dashboard(win), win.destroy())).pack(side="right")
     tk.Button(top, text="-", width=3, bg="#333", fg="white",
              command=lambda: ctypes.windll.user32.ShowWindow(hwnd, SW_MINIMIZE)).pack(side="right")
+    def redraw():
+        ctypes.windll.user32.RedrawWindow(hwnd, None, None,
+                                         RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN)
+
     def grab(event):
         win._drag = (event.x_root - win.winfo_x(), event.y_root - win.winfo_y())
+
     def drag(event):
         dx, dy = getattr(win, "_drag", (0, 0))
         win.geometry(f"+{event.x_root - dx}+{event.y_root - dy}")
-    win.bind("<Button-1>", grab)
-    win.bind("<B1-Motion>", drag)
+        win.update_idletasks()
+        redraw()
+
+    def bind_drag(w):
+        if isinstance(w, (tk.Button, tk.Spinbox)):
+            return
+        w.bind("<Button-1>", grab)
+        w.bind("<B1-Motion>", drag)
+        w.bind("<ButtonRelease-1>", lambda _e: redraw())
+        for c in w.winfo_children():
+            bind_drag(c)
     tiles = {}
     grid = tk.Frame(win, bg="#161616")
     grid.pack(fill="both", expand=True, padx=8, pady=2)
+
+    def disable(key):
+        cfg["fields"] = [k for k in cfg["fields"] if k != key]
+        save_dashboard(cfg)
+        logline(f'[{time.strftime("%H:%M:%S")}] dashboard field {FIELD_TITLES[key]} off')
+        build_tiles()
 
     def build_tiles():
         for w in grid.winfo_children():
             w.destroy()
         tiles.clear()
-        cfg["fields"] = load_dashboard().get("fields", DEFAULT_FIELDS)
         keys = [k for k in cfg["fields"] if k in FIELD_TITLES]
         for i, key in enumerate(keys):
             cell = tk.Frame(grid, bg="#1e1e1e")
             cell.grid(row=i // 2, column=i % 2, sticky="nsew", padx=2, pady=2)
-            tk.Label(cell, text=FIELD_TITLES[key], fg="#888", bg="#1e1e1e",
-                     font=("Segoe UI", 8)).pack(anchor="w", padx=6, pady=(4, 0))
+            title = tk.Label(cell, text=FIELD_TITLES[key], fg="#888", bg="#1e1e1e",
+                             font=("Segoe UI", 8))
+            title.pack(anchor="w", padx=6, pady=(4, 0))
             lab = tk.Label(cell, text="-", fg="#0f0", bg="#1e1e1e", font=("Segoe UI", 11, "bold"))
             lab.pack(anchor="w", padx=6, pady=(0, 4))
             tiles[key] = lab
+            for w in (cell, title, lab):
+                w.bind("<Double-1>", lambda _e, key=key: disable(key))
         rows = max(1, (len(keys) + 1) // 2)
-        win.geometry(f"400x{rows * 46 + 126}")
+        win.geometry(f"400x{rows * 46 + 102}")
+        bind_drag(grid)
+        redraw()
 
-    build_tiles()
-    dashboards.append((win, build_tiles))
+    def apply_settings():
+        cfg.update(load_dashboard())
+        win.attributes("-alpha", cfg["opacity"])
+        build_tiles()
+
+    apply_settings()
+    dashboards.append((win, apply_settings))
     win.protocol("WM_DELETE_WINDOW", lambda: (close_dashboard(win), win.destroy()))
     servers = tk.Label(win, text="-", fg="#ddd", bg="#161616", font=("Segoe UI", 9))
     servers.pack(anchor="w", padx=8, pady=(2, 0))
     stamp = tk.Label(win, text="-", fg="#ddd", bg="#161616", font=("Segoe UI", 9))
     stamp.pack(anchor="w", padx=8, pady=(0, 2))
-    def on_opacity(_event):
-        cfg["opacity"] = round(float(scale.get()) / 100, 2)
-        win.attributes("-alpha", cfg["opacity"])
-        save_dashboard(cfg)
-    row = tk.Frame(win, bg="#161616")
-    row.pack(fill="x", padx=8, pady=(4, 6))
-    tk.Label(row, text="opacity", fg="#888", bg="#161616", font=("Segoe UI", 8)).pack(side="left")
-    scale = ttk.Scale(row, from_=40, to=100, value=int(cfg["opacity"] * 100), orient="horizontal", command=on_opacity)
-    scale.pack(side="left", fill="x", expand=True)
     def on_refresh(_event=None):
         try:
             cfg["refresh"] = max(1, int(float(refresh_var.get())))
@@ -576,6 +597,7 @@ def open_dashboard():
     spin.pack(side="left")
     spin.bind("<KeyRelease>", on_refresh)
     tk.Label(row2, text="s", fg="#888", bg="#161616", font=("Segoe UI", 8)).pack(side="left")
+    bind_drag(win)
     results = queue.Queue()
     def worker():
         try:
@@ -725,11 +747,14 @@ def open_settings():
     for i, c in enumerate(cols):
         tk.Label(tree, text=c, fg="#ddd", bg="#1e1e1e", width=widths[i], anchor="w").grid(row=0, column=i)
     entries = []
-    for r, svc in enumerate(services, start=1):
+
+    def make_row(svc):
+        r = len(entries) + 1
         row_e = []
         cmd = svc.get("cmd", [])
-        vals = [svc["name"], svc.get("host") or "127.0.0.1", str(svc["port"]), str(svc["interval"]),
-                svc.get("url", ""), cmd[0] if cmd else "", " ".join(cmd[1:]), svc.get("cwd", "")]
+        vals = [svc.get("name", ""), svc.get("host") or "127.0.0.1", str(svc.get("port", "")),
+                str(svc.get("interval", 60)), svc.get("url", ""), cmd[0] if cmd else "",
+                " ".join(cmd[1:]), svc.get("cwd", "")]
         for c, val in enumerate(vals):
             e = tk.Entry(tree, bg="#2a2a2a", fg="white", width=widths[c])
             e.grid(row=r, column=c, pady=2, padx=1)
@@ -739,13 +764,55 @@ def open_settings():
         tk.Checkbutton(tree, variable=var, bg="#1e1e1e", fg="white", selectcolor="#2a2a2a").grid(row=r, column=8, pady=2, padx=1)
         row_e.append(var)
         entries.append(row_e)
+        return row_e
+
+    for svc in services:
+        make_row(svc)
+
+    def add_row():
+        row = make_row({"name": "", "host": "127.0.0.1", "port": "", "interval": 60,
+                        "url": "", "cmd": [], "cwd": "", "auto_restart": True})
+        row[0].focus_set()
 
     dash_cfg = load_dashboard()
+
+    def apply_fields():
+        dash_cfg["fields"] = [key for keys in FIELD_GROUPS.values() for key in keys if field_vars[key].get()]
+        save_dashboard(dash_cfg)
+        refresh_dashboards()
+
+    def apply_field(key):
+        apply_fields()
+        logline(f'[{time.strftime("%H:%M:%S")}] dashboard field {FIELD_TITLES[key]} {"on" if field_vars[key].get() else "off"}')
+
+    def apply_opacity(_event=None):
+        try:
+            value = min(100, max(40, int(float(opacity_var.get()))))
+        except ValueError:
+            return
+        dash_cfg["opacity"] = value / 100
+        opacity_var.set(str(value))
+        save_dashboard(dash_cfg)
+        refresh_dashboards()
+        logline(f'[{time.strftime("%H:%M:%S")}] dashboard opacity {value}%')
+
+    drow = tk.Frame(win, bg="#1e1e1e")
+    drow.pack(fill="x", padx=10, pady=(4, 2))
+    tk.Label(drow, text="Dashboard opacity", fg="#ddd", bg="#1e1e1e", font=("Segoe UI", 9, "bold")).pack(side="left")
+    opacity_var = tk.StringVar(value=str(int(round(dash_cfg["opacity"] * 100))))
+    spin = tk.Spinbox(drow, from_=40, to=100, increment=5, textvariable=opacity_var, width=6,
+                      bg="#2a2a2a", fg="white", buttonbackground="#333", insertbackground="white",
+                      font=("Segoe UI", 9), command=apply_opacity)
+    spin.pack(side="left", padx=(8, 0))
+    spin.bind("<KeyRelease>", apply_opacity)
+    tk.Label(drow, text="%", fg="#888", bg="#1e1e1e", font=("Segoe UI", 8)).pack(side="left")
+
     tk.Label(win, text="Dashboard fields (tick to show as tiles)", fg="#ddd", bg="#1e1e1e",
              font=("Segoe UI", 9, "bold")).pack(anchor="w", padx=10)
     panel = tk.Frame(win, bg="#1e1e1e")
     panel.pack(fill="x", padx=10, pady=(4, 6))
     field_vars = {}
+
     for group, keys in FIELD_GROUPS.items():
         tk.Label(panel, text=group, fg="#888", bg="#1e1e1e", font=("Segoe UI", 8, "bold")).pack(anchor="w", pady=(4, 0))
         for i in range(0, len(keys), 6):
@@ -754,39 +821,49 @@ def open_settings():
             for key in keys[i:i + 6]:
                 var = tk.BooleanVar(value=key in dash_cfg["fields"])
                 field_vars[key] = var
-                tk.Checkbutton(line, text=FIELD_TITLES[key], variable=var, bg="#1e1e1e", fg="white",
-                               selectcolor="#2a2a2a", font=("Segoe UI", 8)).pack(side="left", padx=6)
+                tk.Checkbutton(line, text=FIELD_TITLES[key], variable=var, command=lambda key=key: apply_field(key),
+                               bg="#1e1e1e", fg="white", selectcolor="#2a2a2a", font=("Segoe UI", 8)).pack(side="left", padx=6)
 
     def on_save():
         new_services = []
-        try:
-            for row_e in entries:
-                path = row_e[5].get().strip()
-                args = split_command(row_e[6].get().strip())
-                new_services.append({
-                    "name": row_e[0].get().strip(),
-                    "host": row_e[1].get().strip() or "127.0.0.1",
-                    "port": int(row_e[2].get().strip()),
-                    "interval": max(1, int(row_e[3].get().strip())),
-                    "url": row_e[4].get().strip(),
-                    "cmd": ([path] + args) if path else args,
-                    "cwd": row_e[7].get().strip(),
-                    "auto_restart": bool(row_e[8].get()),
-                    "restarts": next((s.get("restarts", 0) for s in services if s["name"] == row_e[0].get().strip()), 0),
-                })
-        except ValueError:
-            messagebox.showerror("Error", "Port and Interval must be numbers")
-            return
+        for i, row_e in enumerate(entries, start=1):
+            name = row_e[0].get().strip()
+            if not name:
+                if not (row_e[2].get().strip() or row_e[5].get().strip() or row_e[6].get().strip()):
+                    continue
+                messagebox.showerror("Error", f"Row {i}: Name is required")
+                return
+            try:
+                port = int(row_e[2].get().strip())
+                interval = max(1, int(row_e[3].get().strip()))
+            except ValueError:
+                messagebox.showerror("Error", f"{name}: Port and Interval must be numbers")
+                return
+            path = row_e[5].get().strip()
+            args = split_command(row_e[6].get().strip())
+            new_services.append({
+                "name": name,
+                "host": row_e[1].get().strip() or "127.0.0.1",
+                "port": port,
+                "interval": interval,
+                "url": row_e[4].get().strip(),
+                "cmd": ([path] + args) if path else args,
+                "cwd": row_e[7].get().strip(),
+                "auto_restart": bool(row_e[8].get()),
+                "restarts": next((s.get("restarts", 0) for s in services if s["name"] == name), 0),
+            })
         services.clear()
         services.extend(new_services)
         save_settings(services)
-        dash_cfg["fields"] = [key for keys in FIELD_GROUPS.values() for key in keys if field_vars[key].get()]
-        save_dashboard(dash_cfg)
-        refresh_dashboards()
+        apply_fields()
         rebuild_rows()
         logline(f'[{time.strftime("%H:%M:%S")}] settings saved')
         win.destroy()
-    tk.Button(win, text="Save", command=on_save, bg="#333", fg="white").pack(pady=5)
+    btns = tk.Frame(win, bg="#1e1e1e")
+    btns.pack(pady=5)
+    tk.Button(btns, text="Save", command=on_save, bg="#333", fg="white").pack(side="left", padx=4)
+    tk.Button(btns, text="Add Row", command=add_row, bg="#333", fg="white").pack(side="left", padx=4)
+    win.geometry(f"1180x{max(700, win.winfo_reqheight())}")
 
 def open_scanner():
     try:

@@ -85,10 +85,15 @@ A corrupt or missing settings file falls back to the built-in default
   config file. The call path is the first token of the command, so restarting a service
   uses the same interpreter that was running rather than whatever `python`/`node`
   resolves from `PATH`. Args is split quote-aware, so paths with spaces survive.
-  Below the table is a **Dashboard fields** picker — tick any of the 62 fields exposed by
-  `/metrics` (grouped as hardware / engine / live / totals / conversation_cache /
-  hardware_static) to choose which tiles the dashboard shows. Save writes the selection to
-  `dashboard_settings.json` and rebuilds any open dashboard immediately.
+  **Add Row** appends a blank service row (host `127.0.0.1`, interval 60, auto restart on)
+  that is written to the config on the next Save. A row left completely blank is skipped, and
+  Save names the row when Name, Port or Interval is missing or non-numeric. The window sizes
+  itself to the picker so the Save / Add Row buttons are always visible.
+  Below the table is a **Dashboard opacity** number (40–100%) and a **Dashboard fields**
+  picker — tick any of the 62 fields exposed by `/metrics` (grouped as hardware / engine /
+  live / totals / conversation_cache / hardware_static) to choose which tiles the dashboard
+  shows. Both apply straight away: the value is written to `dashboard_settings.json` and any
+  open dashboard is recoloured and rebuilt without pressing Save.
 - **Scan** — lists running `python`/`node` processes that are listening on a local
   port in a Process / Call path / Working dir / Port / PID / Flag / Command table. The
   call path is the absolute path of the interpreter (`shutil.which`) and becomes the first
@@ -103,14 +108,18 @@ A corrupt or missing settings file falls back to the built-in default
 - **Dashboard** — a frameless overlay window that reads `http://127.0.0.1:8080/metrics`
   (JSON) every 30s and shows one tile per field selected in the Settings picker. The default
   selection is Speed, GPU load, VRAM, GPU temp, Power, PCIe rx, CPU, Disk read, State and
-  Context used. Below the tiles: a `servers up N / down N` line (mirrors the main window
-  status) and an `updated HH:MM:SS` line that shows the fetch error if the endpoint is
-  unreachable. Long values (model name, GPU name) are truncated to fit the tile. The window
-  is always on top and grows with the number of selected tiles. The title bar is removed with
-  Win32 style flags but it keeps a taskbar button, so the `-` button minimizes it to
-  the taskbar; drag anywhere on the window to move it. The opacity slider (40–100%) and
-  the refresh spinbox (5–600s, applied on the next tick) are saved to
-  `dashboard_settings.json` along with the URL and the field selection. Fetches
+  Context used. VRAM and RAM show usage as a percentage of the total. Below the tiles: a
+  `servers up N / down N` line (mirrors the main window status) and an `updated HH:MM:SS`
+  line that shows the fetch error if the endpoint is unreachable. Long values (model name,
+  GPU name) are truncated to fit the tile. The window is always on top and grows with the
+  number of selected tiles. The title bar is removed with Win32 style flags but it keeps a
+  taskbar button, so the `-` button minimizes it to the taskbar. Drag anywhere, including
+  across the tiles, to move it — the window is force-repainted after each move so the tiles
+  redraw instead of leaving stale pixels. Opacity is a number in Settings; the window keeps
+  the refresh spinbox (5–600s, applied on the next tick). Both, with the URL and the field
+  selection, are saved to `dashboard_settings.json`. Double-click a tile to drop it from the
+  dashboard — the selection is saved (the Settings picker shows it unticked) and the window
+  shrinks. Fetches
   run on a background thread so the UI stays responsive.
 
   Fields available in the picker:
