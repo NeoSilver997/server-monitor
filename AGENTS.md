@@ -35,9 +35,12 @@ plain JSON array of service objects (no wrapper object, no comments, no trailing
 - Confirm the target directory exists for every `cwd`, and the executable exists for every
   `cmd[0]`.
 - Do not commit this file — it is runtime state, along with `dashboard_settings.json`,
-  `daily_extremes.json`, `server_watcher.log`, `scan_export.csv` and `scan_export.json`. All of
-  these are git-ignored; `server_watcher_settings.sample.json` is the committed example to copy
-  a new entry from.
+  `daily_extremes.json`, `server_watcher.log`, `service_logs/`, `scan_export.csv` and
+  `scan_export.json`. All of these are git-ignored; `server_watcher_settings.sample.json`
+  is the committed example to copy a new entry from.
+- A service starts hidden (no console window) and its output goes to
+  `service_logs/<name>_<port>.log`. That file is the only place a startup failure shows up, so
+  start the service once and read it before declaring a new `cmd` correct.
 
 ## Dashboard config
 

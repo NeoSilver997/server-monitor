@@ -6,4 +6,5 @@ daily_extremes.json
 server_watcher.log
 scan_export.csv
 scan_export.json
+service_logs/
 __pycache__/

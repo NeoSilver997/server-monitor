@@ -9,6 +9,8 @@ SCAN_EXPORT = "scan_export"
 CONFIG_EXPORT = "config_export"
 DASHBOARD_FILE = "dashboard_settings.json"
 DAILY_FILE = "daily_extremes.json"
+SERVICE_LOG_DIR = "service_logs"
+CONSOLE_TAIL_BYTES = 200_000
 
 FIELD_GROUPS = {
     "hardware": ("speed", "gpu_load", "vram", "temp", "power", "pcie_rx", "pcie_tx", "pcie_gen",
@@ -123,8 +125,40 @@ def http_ok(url, timeout=2.0):
     except Exception:
         return False
 
+def service_log_path(svc):
+    """One output file per service, so a hidden service that dies at startup can still be read."""
+    slug = re.sub(r"[^A-Za-z0-9]+", "_", f'{svc["name"]}_{svc["port"]}').strip("_")
+    return os.path.join(SERVICE_LOG_DIR, f"{slug}.log")
+
 def start_service(svc):
-    subprocess.Popen(svc["cmd"], cwd=svc.get("cwd") or None, creationflags=subprocess.CREATE_NEW_CONSOLE)
+    # CREATE_NO_WINDOW: no console, so the service runs in the background and is not torn
+    # down with a console window. Its output would otherwise be lost, so it goes to a log.
+    os.makedirs(SERVICE_LOG_DIR, exist_ok=True)
+    with open(service_log_path(svc), "a", encoding="utf-8", errors="replace") as out:
+        out.write(f'\n=== {time.strftime("%Y-%m-%d %H:%M:%S")} start '
+                  f'(cwd {svc.get("cwd") or os.getcwd()}): {" ".join(svc["cmd"])}\n')
+        out.flush()
+        return subprocess.Popen(svc["cmd"], cwd=svc.get("cwd") or None,
+                                stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT,
+                                creationflags=subprocess.CREATE_NO_WINDOW).pid
+
+def service_key(svc):
+    return f'{svc["name"]} {svc.get("host") or "127.0.0.1"}:{svc["port"]}'
+
+def stop_service(svc):
+    """Kill the service and everything under it. The socket owner is killed as well,
+    because a wrapper (.bat, npm, turbo) is often not the process actually listening."""
+    pids = set()
+    pid = started_pids.get(service_key(svc))
+    if pid:
+        pids.add(pid)
+    for pid, ports in list_listening_ports().items():
+        if svc["port"] in ports:
+            pids.add(pid)
+    for pid in pids:
+        subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True,
+                       creationflags=subprocess.CREATE_NO_WINDOW)
+    return pids
 
 def list_listening_ports():
     ports = {}
@@ -766,6 +800,7 @@ root.configure(bg="#1e1e1e")
 services = load_settings()
 status_labels = {}
 last_check = {}
+started_pids = {}
 
 summary = tk.Label(root, text="", fg="#ddd", bg="#1e1e1e", font=("Segoe UI", 9, "bold"))
 summary.pack(anchor="w", padx=10, pady=(8, 0))
@@ -806,7 +841,11 @@ def rebuild_rows():
                  fg="#3f3" if auto else "#888", bg=bg).pack(side="left")
         tk.Button(row, text="start", width=6, bg="#333", fg="white",
                   command=lambda s=svc: start_now(s)).pack(side="left")
-        key = f'{svc["name"]} {host}:{svc["port"]}'
+        tk.Button(row, text="stop", width=6, bg="#333", fg="white",
+                  command=lambda s=svc: stop_now(s)).pack(side="left")
+        tk.Button(row, text="console", width=8, bg="#333", fg="white",
+                  command=lambda s=svc: open_console(s)).pack(side="left")
+        key = service_key(svc)
         status_labels[key] = (lab, iv, rs, svc)
         last_check.setdefault(key, 0)
 
@@ -826,10 +865,62 @@ def start_now(svc):
         logline(f'[{time.strftime("%H:%M:%S")}] {svc["name"]} {host}:{svc["port"]} is remote, cannot start locally')
         return
     try:
-        start_service(svc)
+        started_pids[service_key(svc)] = start_service(svc)
         logline(f'[{time.strftime("%H:%M:%S")}] {svc["name"]} ({svc["port"]}) manual start: {" ".join(svc["cmd"])}')
     except Exception as e:
         logline(f'[{time.strftime("%H:%M:%S")}] FAILED {svc["name"]}: {e}')
+
+def stop_now(svc):
+    try:
+        pids = stop_service(svc)
+    except Exception as e:
+        logline(f'[{time.strftime("%H:%M:%S")}] FAILED to stop {svc["name"]}: {e}')
+        return
+    started_pids.pop(service_key(svc), None)
+    if pids:
+        logline(f'[{time.strftime("%H:%M:%S")}] {svc["name"]} ({svc["port"]}) stopped '
+                f'(killed {", ".join(str(p) for p in sorted(pids))})')
+    else:
+        logline(f'[{time.strftime("%H:%M:%S")}] {svc["name"]} ({svc["port"]}) was not running')
+
+def open_console(svc):
+    """Tail of what the service printed. Polls the file, so it follows a running service."""
+    win = tk.Toplevel(root)
+    win.title(f'{svc["name"]} :{svc["port"]} console')
+    win.geometry("860x440")
+    win.configure(bg="#1e1e1e")
+    path = service_log_path(svc)
+    tk.Label(win, text=path, fg="#888", bg="#1e1e1e", font=("Segoe UI", 8)).pack(anchor="w", padx=8, pady=(8, 0))
+    box = scrolledtext.ScrolledText(win, bg="#111", fg="#0f0", insertbackground="white",
+                                    font=("Consolas", 9), wrap="none")
+    box.pack(fill="both", expand=True, padx=8, pady=8)
+    state = {"size": -1}
+
+    def read():
+        if not win.winfo_exists():
+            return
+        try:
+            size = os.path.getsize(path)
+        except OSError:
+            size = 0
+        if size != state["size"]:
+            state["size"] = size
+            try:
+                with open(path, "r", encoding="utf-8", errors="replace") as f:
+                    f.seek(max(0, size - CONSOLE_TAIL_BYTES))
+                    text = f.read()
+            except OSError as e:
+                text = f"cannot read {path}: {e}"
+            at_end = box.yview()[1] >= 1.0
+            box.delete("1.0", "end")
+            box.insert("end", text or "(no output yet)")
+            if at_end:
+                box.see("end")
+        win.after(1000, read)
+
+    read()
+    tk.Button(win, text="stop", width=8, bg="#333", fg="white",
+              command=lambda: stop_now(svc)).pack(pady=(0, 8))
 
 def check_all():
     now = time.time()
@@ -854,7 +945,7 @@ def check_all():
                 continue
             logline(f'[{time.strftime("%H:%M:%S")}] {name} ({reason}) -> starting')
             try:
-                start_service(svc)
+                started_pids[service_key(svc)] = start_service(svc)
                 svc["restarts"] = svc.get("restarts", 0) + 1
                 rs.config(text=f'r:{svc["restarts"]}')
                 save_settings(services)

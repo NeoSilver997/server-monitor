@@ -73,10 +73,18 @@ A corrupt or missing settings file falls back to the built-in default
 ## UI
 
 - **Main window** — header row plus one row per service (Status / Name / Host / Port /
-  Interval / Restarts / Auto) with a `start` button that launches that service immediately, logged as
-  a manual start. A summary line above the rows shows `servers up N / down N`; rows
-  alternate shading, status is green for RUNNING and red for DOWN, and a remote `host` is
-  shown in blue.
+  Interval / Restarts / Auto) with `start` / `stop` / `console` buttons. A summary line above
+  the rows shows `servers up N / down N`; rows alternate shading, status is green for RUNNING
+  and red for DOWN, and a remote `host` is shown in blue.
+  - `start` launches the service straight away; `stop` kills it and its children, plus whatever
+    process holds the port (a wrapper like a `.bat` or `npm` is often not the one listening), so
+    a service started outside the app can be stopped from here too.
+  - `console` opens a live tail of that service's output — see **Service output** below.
+- **Service output** — services start hidden (no console window), so each one appends its
+  stdout and stderr to `service_logs/<name>_<port>.log`, shown in the `console` window and
+  refreshed once a second while it is open. The window follows the end of the file unless you
+  scroll up, and carries its own `stop` button. This log is the only record of why a service
+  died on startup: a hidden process has nowhere else to report an error.
 - **Check Now** — runs a check pass immediately, ignoring intervals.
 - **Settings** — two tabs with buttons across the top: **Services** and **Dashboard**. Only the
   selected tab is shown, and the active button is highlighted.
@@ -161,6 +169,10 @@ A corrupt or missing settings file falls back to the built-in default
 
 Every restart, settings save, dashboard change and new daily max is written to both the
 in-window log pane and `server_watcher.log`. The log is append-only and is not rotated.
+
+Service output is separate: each service writes to `service_logs/<name>_<port>.log`, opened by
+the row's `console` button. Those files are append-only too, so they grow across restarts — a
+line such as `=== 2026-10-19 13:23:40 start (cwd ...)` marks each new run.
 
 ## Known limitations
 
