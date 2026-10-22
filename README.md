@@ -6,7 +6,7 @@ their health, and automatically restarts any that are down.
 ## Requirements
 
 - Python 3.7+ with `tkinter` (bundled with the standard CPython Windows installer)
-- Windows only — uses `subprocess.CREATE_NEW_CONSOLE` and `os.startfile`
+- Windows only — uses `subprocess.CREATE_NO_WINDOW` and `os.startfile`
 - No third-party dependencies
 
 ## Quick start
@@ -27,10 +27,12 @@ For each configured service, on its own interval:
 1. Probe the TCP port on `host` (0.3s timeout for a local host, 1.5s for a remote one).
 2. If a `url` is set, issue a `GET` and accept status `200-399` (2s timeout).
    An empty `url` means "port open is healthy".
-3. If healthy, the row shows `RUNNING`.
-4. If down, log the reason (`port closed` or `HTTP fail`), launch `cmd` in a new
-   console window, increment the restart counter, and save the settings. Remote hosts are
-   reported as down but never started — the app can only launch processes on this machine.
+3. Healthy: the row shows `running` when a process this watcher started is still alive, otherwise
+   `up` (reachable, but the app did not start it). While the probe is in flight the row shows
+   `checking`, and each row keeps the time of its last check.
+4. If down, the row shows `stopped`, the reason (`port closed` or `HTTP fail`) is logged, `cmd` is
+   launched hidden, the restart counter is incremented, and the settings are saved. Remote hosts
+   are reported as down but never started — the app can only launch processes on this machine.
 
 The GUI refreshes every second via `root.after`, and the restart counters are
 persisted so they survive app restarts.
@@ -72,10 +74,19 @@ A corrupt or missing settings file falls back to the built-in default
 
 ## UI
 
-- **Main window** — header row plus one row per service (Status / Name / Host / Port /
-  Interval / Restarts / Auto) with `start` / `stop` / `console` buttons. A summary line above
-  the rows shows `servers up N / down N`; rows alternate shading, status is green for RUNNING
-  and red for DOWN, and a remote `host` is shown in blue.
+- **Main window** — header row `Name / Status / Last check / Port` plus one row per service, with
+  `▶ start` / `■ stop` / `▤ console` buttons. A summary line above the rows shows
+  `servers up N / down N` (a row counts as up when it is `up` or `running`); rows alternate shading.
+  - Status is an icon plus the state name: `▶ running` green (a process this watcher started and
+    is still alive), `● up` blue (reachable, but the app did not start it), `◐ checking` orange
+    (probe in flight), `■ stopped` red (port closed or health check failed). A remote host can
+    only ever be `up`, never `running`.
+  - Last check is the time of that row's last probe (`never` until it has been checked). The state
+    and the time survive a Settings save, which rebuilds the rows.
+  - Port is a link: clicking it opens the service in the default browser — its `url` when set,
+    otherwise `http://host:port/` — and the open is logged.
+  - Buttons are icon-prefixed and colour-coded to match the states: `▶ start` green, `■ stop` red,
+    `▤ console` blue.
   - `start` launches the service straight away; `stop` kills it and its children, plus whatever
     process holds the port (a wrapper like a `.bat` or `npm` is often not the one listening), so
     a service started outside the app can be stopped from here too.
@@ -84,21 +95,26 @@ A corrupt or missing settings file falls back to the built-in default
   stdout and stderr to `service_logs/<name>_<port>.log`, shown in the `console` window and
   refreshed once a second while it is open. The window follows the end of the file unless you
   scroll up, and carries its own `stop` button. This log is the only record of why a service
-  died on startup: a hidden process has nowhere else to report an error.
+  died on startup: a hidden process has nowhere else to report an error. Each run starts clean —
+  on a restart and once a day the file is rotated, so the console shows the current run and the
+  previous content is kept as `.1` … `.5` (see **Logging**).
 - **Check Now** — runs a check pass immediately, ignoring intervals.
 - **Settings** — two tabs with buttons across the top: **Services** and **Dashboard**. Only the
   selected tab is shown, and the active button is highlighted.
-  - **Services tab** — editable table (Name / Host / Port / Interval / URL / Call path / Args /
-    Working dir / Auto restart) with the **Save** and **Add Row** buttons. A restart runs the
+  - **Services tab** — editable table (Name / Host / Port / Interval / URL / Call path /
+    Args / Working dir / Auto restart) with the **Save** and **Add Row** buttons. Call path,
+    Args and Working dir are three-line boxes, so a long command is readable instead of being
+    cut off at the edge of a single-line field. Args is **one argument per line**, which is what
+    keeps a path containing spaces as one argument; a line that contains a quote is still split
+    quote-aware, so the old space-separated style keeps working. A restart runs the
     command in that working directory, so a service launched with a relative script
     (e.g. `node server.js`) comes back in its own project folder. Save validates that Port and
     Interval are numbers, rebuilds the rows, and writes the config file. The call path is the
     first token of the command, so restarting a service uses the same interpreter that was
-    running rather than whatever `python`/`node` resolves from `PATH`. Args is split
-    quote-aware, so paths with spaces survive. **Add Row** appends a blank service row
-    (host `127.0.0.1`, interval 60, auto restart on) that is written to the config on the next
-    Save. A row left completely blank is skipped, and Save names the row when Name, Port or
-    Interval is missing or non-numeric.
+    running rather than whatever `python`/`node` resolves from `PATH`. **Add Row** appends a
+    blank service row (host `127.0.0.1`, interval 60, auto restart on) that is written to the
+    config on the next Save. A row left completely blank is skipped, and Save names the row
+    when Name, Port or Interval is missing or non-numeric.
   - **Dashboard tab** — **Metrics URL**, **Opacity** (40–100%), **Refresh** (5–600s) and the
     **Dashboard fields** picker. Each of the 62 fields exposed by `/metrics` (grouped as
     hardware / engine / live / totals / conversation_cache / hardware_static) has a small number
@@ -167,12 +183,20 @@ A corrupt or missing settings file falls back to the built-in default
 
 ## Logging
 
-Every restart, settings save, dashboard change and new daily max is written to both the
-in-window log pane and `server_watcher.log`. The log is append-only and is not rotated.
+Every restart, settings save, dashboard change, new daily max, daily rollover and browser open is
+written to both the in-window log pane and `server_watcher.log`.
 
-Service output is separate: each service writes to `service_logs/<name>_<port>.log`, opened by
-the row's `console` button. Those files are append-only too, so they grow across restarts — a
-line such as `=== 2026-10-19 13:23:40 start (cwd ...)` marks each new run.
+Rotation covers the watcher log and every service log: once a file passes 1 MB it is renamed to
+`.1`, the old `.1` to `.2`, and so on, so at most five previous copies are kept. Rotation is also
+forced regardless of size, which is how the console resets:
+
+- on restart — each service log is rotated before the new run writes to it, so the console shows
+  the current run and the previous run is kept as `.1`;
+- daily — on the first loop of a new date, the watcher log and every service log are rotated, and
+  the log gets a line such as `[14:02:11] daily log rollover (7 file(s) rotated)`.
+
+A line such as `=== 2026-10-19 13:23:40 start (cwd ...)` still marks each new run inside the
+current file.
 
 ## Known limitations
 
@@ -181,8 +205,9 @@ line such as `=== 2026-10-19 13:23:40 start (cwd ...)` marks each new run.
   instances can accumulate.
 - Network checks run on the Tk event loop, so a hanging endpoint can freeze the UI
   for a few seconds.
-- Service names are used as UI keys, so duplicate names collide and renaming a
-  service resets its restart count.
+- Rows are keyed by `name host:port`, so the same name on a different port is a separate row;
+  renaming a service (or changing its host/port in Settings) drops its status and last-check time,
+  which start again from `checking` / `never`.
 - The Command field is re-parsed with plain whitespace splitting, so arguments
   containing spaces are broken on save. Use the JSON file for commands with spaced
   or quoted arguments.

@@ -1,4 +1,4 @@
-import socket, subprocess, time, json, os, csv, ctypes, queue, threading, shutil, re
+import socket, subprocess, time, json, os, csv, ctypes, queue, threading, shutil, re, webbrowser
 import urllib.request, urllib.error
 import tkinter as tk
 from tkinter import scrolledtext, messagebox, ttk
@@ -11,6 +11,13 @@ DASHBOARD_FILE = "dashboard_settings.json"
 DAILY_FILE = "daily_extremes.json"
 SERVICE_LOG_DIR = "service_logs"
 CONSOLE_TAIL_BYTES = 200_000
+LOG_MAX_BYTES = 1_000_000   # rotate a log once it passes this size
+LOG_KEEP = 5                # rotated copies kept: <name>.1 ... <name>.5
+STILL_ACTIVE = 259
+
+STATE_ICONS = {"running": "▶", "up": "●", "checking": "◐", "stopped": "■"}
+STATE_COLORS = {"running": "#3f3", "up": "#3cf", "checking": "#fa0", "stopped": "#f33"}
+BUTTON_ICONS = {"start": "▶", "stop": "■", "console": "▤"}
 
 FIELD_GROUPS = {
     "hardware": ("speed", "gpu_load", "vram", "temp", "power", "pcie_rx", "pcie_tx", "pcie_gen",
@@ -97,12 +104,53 @@ def save_settings(services):
     with open(CONFIG_FILE, "w", encoding="utf-8") as f:
         json.dump(services, f, indent=2, ensure_ascii=False)
 
+def rotate_log(path, force=False):
+    """Shift path -> path.1 -> ... -> path.LOG_KEEP. Returns True when content was moved,
+    so the writer starts a fresh file. Without force, only rotates past LOG_MAX_BYTES."""
+    try:
+        size = os.path.getsize(path)
+    except OSError:
+        return False
+    if not size or (not force and size < LOG_MAX_BYTES):
+        return False
+    for i in range(LOG_KEEP, 0, -1):
+        src = path if i == 1 else f"{path}.{i - 1}"
+        if not os.path.exists(src):
+            continue
+        dst = f"{path}.{i}"
+        if i == LOG_KEEP and os.path.exists(dst):
+            try:
+                os.remove(dst)
+            except OSError:
+                return False
+        try:
+            os.replace(src, dst)
+        except OSError:
+            return False
+    return True
+
 def file_log(msg):
     try:
+        rotate_log(LOG_FILE)
         with open(LOG_FILE, "a", encoding="utf-8") as f:
             f.write(msg + "\n")
     except Exception:
         pass
+
+log_day = time.strftime("%Y-%m-%d")
+
+def roll_day():
+    """Console logs reset daily: the previous day's content is kept as the rotated copy."""
+    global log_day
+    today = time.strftime("%Y-%m-%d")
+    if today == log_day:
+        return
+    log_day = today
+    rotated = 1 if rotate_log(LOG_FILE, force=True) else 0
+    for svc in services:
+        if rotate_log(service_log_path(svc), force=True):
+            rotated += 1
+    logline(f'[{time.strftime("%H:%M:%S")}] daily log rollover ({rotated} file(s) rotated)')
 
 def port_open(port, host="127.0.0.1", timeout=0.3):
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -134,7 +182,9 @@ def start_service(svc):
     # CREATE_NO_WINDOW: no console, so the service runs in the background and is not torn
     # down with a console window. Its output would otherwise be lost, so it goes to a log.
     os.makedirs(SERVICE_LOG_DIR, exist_ok=True)
-    with open(service_log_path(svc), "a", encoding="utf-8", errors="replace") as out:
+    path = service_log_path(svc)
+    rotate_log(path, force=True)  # console resets on restart; the previous run is kept as .1
+    with open(path, "a", encoding="utf-8", errors="replace") as out:
         out.write(f'\n=== {time.strftime("%Y-%m-%d %H:%M:%S")} start '
                   f'(cwd {svc.get("cwd") or os.getcwd()}): {" ".join(svc["cmd"])}\n')
         out.flush()
@@ -229,6 +279,18 @@ def split_command(cmdline):
         args.append(cur)
     return args
 
+def arg_lines(text):
+    """Settings args box: one argument per line, so a path with spaces needs no quotes.
+    A line that contains a quote is still split quote-aware, which keeps the old
+    space-separated style working."""
+    out = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        out.extend(split_command(line) if '"' in line else [line])
+    return out
+
 kernel32 = ctypes.windll.kernel32
 ntdll = ctypes.windll.ntdll
 kernel32.OpenProcess.restype = ctypes.c_void_p
@@ -236,6 +298,7 @@ kernel32.OpenProcess.argtypes = [ctypes.c_ulong, ctypes.c_bool, ctypes.c_ulong]
 kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
 kernel32.ReadProcessMemory.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
                                        ctypes.c_size_t, ctypes.POINTER(ctypes.c_size_t)]
+kernel32.GetExitCodeProcess.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_ulong)]
 ntdll.NtQueryInformationProcess.argtypes = [ctypes.c_void_p, ctypes.c_ulong, ctypes.c_void_p,
                                             ctypes.c_ulong, ctypes.POINTER(ctypes.c_ulong)]
 
@@ -277,6 +340,21 @@ def process_cwd(pid):
         length = int.from_bytes(name[:2], "little")
         text = read_memory(handle, int.from_bytes(name[8:], "little"), length)
         return text.decode("utf-16-le").rstrip("\\") if text else ""
+    finally:
+        kernel32.CloseHandle(handle)
+
+def pid_alive(pid):
+    """True only for a live process we started, so 'running' is not the same as 'up'."""
+    if not pid:
+        return False
+    handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+    if not handle:
+        return False
+    try:
+        code = ctypes.c_ulong()
+        if not kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
+            return True
+        return code.value == STILL_ACTIVE
     finally:
         kernel32.CloseHandle(handle)
 
@@ -586,8 +664,8 @@ def close_dashboard(win):
     dashboards[:] = [entry for entry in dashboards if entry[0] is not win]
 
 def server_counts():
-    up = sum(1 for lab, _iv, _rs, _svc in status_labels.values() if lab.cget("text") == "RUNNING")
-    return up, len(status_labels) - up
+    up = sum(1 for state in row_state.values() if state in ("up", "running"))
+    return up, len(row_state) - up
 
 def make_frameless(win):
     user32 = ctypes.windll.user32
@@ -798,7 +876,8 @@ root.geometry("560x460")
 root.configure(bg="#1e1e1e")
 
 services = load_settings()
-status_labels = {}
+row_widgets = {}   # service key -> (status label, last check label, svc)
+row_state = {}     # service key -> running / checking / up / stopped
 last_check = {}
 started_pids = {}
 
@@ -808,13 +887,32 @@ summary.pack(anchor="w", padx=10, pady=(8, 0))
 frame = tk.Frame(root, bg="#1e1e1e")
 frame.pack(fill="both", expand=True, padx=10, pady=10)
 
-ROW_WIDTHS = (10, 14, 12, 6, 5, 6, 6)
-ROW_HEADERS = ("Status", "Name", "Host", "Port", "Interval", "Restarts", "Auto")
+ROW_WIDTHS = (14, 12, 11, 7)
+ROW_HEADERS = ("Name", "Status", "Last check", "Port")
+
+def set_state(key, state):
+    row_state[key] = state
+    lab, _last, _svc = row_widgets[key]
+    lab.config(text=f"{STATE_ICONS[state]} {state}", fg=STATE_COLORS[state])
+
+def open_browser(svc):
+    """Port cell is a link: opens the service in the default browser (its health URL when set)."""
+    host = svc.get("host") or "127.0.0.1"
+    url = svc.get("url") or f"http://{host}:{svc['port']}/"
+    try:
+        webbrowser.open(url)
+        logline(f'[{time.strftime("%H:%M:%S")}] opened {url}')
+    except Exception as e:
+        logline(f'[{time.strftime("%H:%M:%S")}] could not open {url}: {e}')
 
 def rebuild_rows():
     for w in frame.winfo_children():
         w.destroy()
-    status_labels.clear()
+    row_widgets.clear()
+    keys = {service_key(s) for s in services}
+    for key in list(row_state):
+        if key not in keys:
+            row_state.pop(key)
     head = tk.Frame(frame, bg="#1e1e1e")
     head.pack(fill="x", pady=(0, 4))
     for title, width in zip(ROW_HEADERS, ROW_WIDTHS):
@@ -825,29 +923,25 @@ def rebuild_rows():
         bg = "#232323" if r % 2 else "#1e1e1e"
         row = tk.Frame(frame, bg=bg)
         row.pack(fill="x", pady=2)
-        lab = tk.Label(row, text="checking...", width=ROW_WIDTHS[0], fg="#888", bg=bg)
-        lab.pack(side="left")
-        tk.Label(row, text=svc["name"], width=ROW_WIDTHS[1], anchor="w", fg="white", bg=bg).pack(side="left")
-        host = svc.get("host") or "127.0.0.1"
-        tk.Label(row, text=host, width=ROW_WIDTHS[2], anchor="w",
-                 fg="#888" if host in LOCAL_HOSTS else "#3cf", bg=bg).pack(side="left")
-        tk.Label(row, text=str(svc["port"]), width=ROW_WIDTHS[3], fg="#ddd", bg=bg).pack(side="left")
-        iv = tk.Label(row, text=f'{svc["interval"]}s', width=ROW_WIDTHS[4], fg="#aaa", bg=bg)
-        iv.pack(side="left")
-        rs = tk.Label(row, text=f'r:{svc["restarts"]}', width=ROW_WIDTHS[5], fg="#fa0", bg=bg)
-        rs.pack(side="left")
-        auto = svc.get("auto_restart", True)
-        tk.Label(row, text="auto" if auto else "manual", width=ROW_WIDTHS[6],
-                 fg="#3f3" if auto else "#888", bg=bg).pack(side="left")
-        tk.Button(row, text="start", width=6, bg="#333", fg="white",
-                  command=lambda s=svc: start_now(s)).pack(side="left")
-        tk.Button(row, text="stop", width=6, bg="#333", fg="white",
-                  command=lambda s=svc: stop_now(s)).pack(side="left")
-        tk.Button(row, text="console", width=8, bg="#333", fg="white",
-                  command=lambda s=svc: open_console(s)).pack(side="left")
         key = service_key(svc)
-        status_labels[key] = (lab, iv, rs, svc)
-        last_check.setdefault(key, 0)
+        tk.Label(row, text=svc["name"], width=ROW_WIDTHS[0], anchor="w", fg="white", bg=bg).pack(side="left")
+        lab = tk.Label(row, width=ROW_WIDTHS[1], anchor="w", fg="#888", bg=bg)
+        lab.pack(side="left")
+        last = tk.Label(row, width=ROW_WIDTHS[2], fg="#aaa", bg=bg)
+        last.pack(side="left")
+        port = tk.Label(row, text=str(svc["port"]), width=ROW_WIDTHS[3], anchor="w",
+                        fg="#3cf", bg=bg, font=("Segoe UI", 9, "underline"), cursor="hand2")
+        port.pack(side="left")
+        port.bind("<Button-1>", lambda _e, s=svc: open_browser(s))
+        tk.Button(row, text=f"{BUTTON_ICONS['start']} start", width=8, bg="#333",
+                  fg=STATE_COLORS["running"], command=lambda s=svc: start_now(s)).pack(side="left")
+        tk.Button(row, text=f"{BUTTON_ICONS['stop']} stop", width=8, bg="#333",
+                  fg=STATE_COLORS["stopped"], command=lambda s=svc: stop_now(s)).pack(side="left")
+        tk.Button(row, text=f"{BUTTON_ICONS['console']} console", width=10, bg="#333",
+                  fg=STATE_COLORS["up"], command=lambda s=svc: open_console(s)).pack(side="left")
+        row_widgets[key] = (lab, last, svc)
+        last.config(text=time.strftime("%H:%M:%S") if last_check.get(key) else "never")
+        set_state(key, row_state.get(key, "checking"))
 
 rebuild_rows()
 
@@ -865,7 +959,9 @@ def start_now(svc):
         logline(f'[{time.strftime("%H:%M:%S")}] {svc["name"]} {host}:{svc["port"]} is remote, cannot start locally')
         return
     try:
-        started_pids[service_key(svc)] = start_service(svc)
+        key = service_key(svc)
+        started_pids[key] = start_service(svc)
+        set_state(key, "running")
         logline(f'[{time.strftime("%H:%M:%S")}] {svc["name"]} ({svc["port"]}) manual start: {" ".join(svc["cmd"])}')
     except Exception as e:
         logline(f'[{time.strftime("%H:%M:%S")}] FAILED {svc["name"]}: {e}')
@@ -877,6 +973,7 @@ def stop_now(svc):
         logline(f'[{time.strftime("%H:%M:%S")}] FAILED to stop {svc["name"]}: {e}')
         return
     started_pids.pop(service_key(svc), None)
+    set_state(service_key(svc), "stopped")
     if pids:
         logline(f'[{time.strftime("%H:%M:%S")}] {svc["name"]} ({svc["port"]}) stopped '
                 f'(killed {", ".join(str(p) for p in sorted(pids))})')
@@ -891,6 +988,8 @@ def open_console(svc):
     win.configure(bg="#1e1e1e")
     path = service_log_path(svc)
     tk.Label(win, text=path, fg="#888", bg="#1e1e1e", font=("Segoe UI", 8)).pack(anchor="w", padx=8, pady=(8, 0))
+    tk.Label(win, text="resets on restart and daily, previous run kept as .1 … .5",
+             fg="#888", bg="#1e1e1e", font=("Segoe UI", 8)).pack(anchor="w", padx=8, pady=(0, 0))
     box = scrolledtext.ScrolledText(win, bg="#111", fg="#0f0", insertbackground="white",
                                     font=("Consolas", 9), wrap="none")
     box.pack(fill="both", expand=True, padx=8, pady=8)
@@ -924,34 +1023,38 @@ def open_console(svc):
 
 def check_all():
     now = time.time()
-    for name, (lab, iv, rs, svc) in list(status_labels.items()):
-        if now - last_check.get(name, 0) < svc["interval"]:
+    for key, (lab, last, svc) in list(row_widgets.items()):
+        if now - last_check.get(key, 0) < svc["interval"]:
             continue
-        last_check[name] = now
+        last_check[key] = now
+        last.config(text=time.strftime("%H:%M:%S"))
+        set_state(key, "checking")
+        root.update_idletasks()   # the icon shows 'checking' while the probe is in flight
         host = svc.get("host") or "127.0.0.1"
         local = host in LOCAL_HOSTS
         port_ok = port_open(svc["port"], host, timeout=0.3 if local else 1.5)
         healthy = port_ok and http_ok(svc.get("url", ""))
         if healthy:
-            lab.config(text="RUNNING", fg="#3f3")
+            # 'running' = a process this watcher started is still alive; 'up' = reachable only.
+            set_state(key, "running" if pid_alive(started_pids.get(key)) else "up")
         else:
-            lab.config(text="DOWN", fg="#f33")
+            set_state(key, "stopped")
             reason = "port closed" if not port_ok else "HTTP fail"
             if not local:
-                logline(f'[{time.strftime("%H:%M:%S")}] {name} ({reason}) -> remote, not startable')
+                logline(f'[{time.strftime("%H:%M:%S")}] {key} ({reason}) -> remote, not startable')
                 continue
             if not svc.get("auto_restart", True):
-                logline(f'[{time.strftime("%H:%M:%S")}] {name} ({reason}) -> auto-restart off')
+                logline(f'[{time.strftime("%H:%M:%S")}] {key} ({reason}) -> auto-restart off')
                 continue
-            logline(f'[{time.strftime("%H:%M:%S")}] {name} ({reason}) -> starting')
+            logline(f'[{time.strftime("%H:%M:%S")}] {key} ({reason}) -> starting')
             try:
-                started_pids[service_key(svc)] = start_service(svc)
+                started_pids[key] = start_service(svc)
                 svc["restarts"] = svc.get("restarts", 0) + 1
-                rs.config(text=f'r:{svc["restarts"]}')
                 save_settings(services)
+                set_state(key, "running")
                 logline(f'[{time.strftime("%H:%M:%S")}] started: {" ".join(svc["cmd"])} (total restarts: {svc["restarts"]})')
             except Exception as e:
-                logline(f'[{time.strftime("%H:%M:%S")}] FAILED {name}: {e}')
+                logline(f'[{time.strftime("%H:%M:%S")}] FAILED {key}: {e}')
     up, down = server_counts()
     summary.config(text=f"servers  up {up} / down {down}")
 
@@ -992,29 +1095,42 @@ def open_settings():
         tab_buttons[name] = b
         b.pack(side="left", padx=(0, 6))
 
-    cols = ("Name", "Host", "Port", "Interval", "URL (optional)", "Call path", "Args", "Working dir", "Auto restart")
-    widths = (12, 14, 8, 8, 16, 30, 20, 26, 10)
+    cols = ("Name", "Host", "Port", "Interval", "URL (optional)", "Call path", "Args (one per line)", "Working dir", "Auto restart")
+    widths = (12, 14, 8, 8, 16, 30, 24, 26, 10)
     tree = section("Services", tabs["Services"], expand=True)
     for i, c in enumerate(cols):
         tk.Label(tree, text=c, fg="#ddd", bg="#1e1e1e", width=widths[i], anchor="w",
-                 font=("Segoe UI", 8, "bold")).grid(row=0, column=i)
+                 font=("Segoe UI", 8, "bold")).grid(row=0, column=i, sticky="w")
     entries = []
+
+    def field_value(w):
+        # Entries and Text boxes are read the same way, so Save does not need to know which is which.
+        return w.get("1.0", "end-1c").strip() if isinstance(w, tk.Text) else w.get().strip()
+
+    def multiline(parent, width, val, bg):
+        box = tk.Text(parent, bg=bg, fg="white", width=width, height=3, font=("Consolas", 8),
+                      relief="flat", padx=4, pady=3, wrap="none")
+        box.insert("1.0", val)
+        return box
 
     def make_row(svc):
         r = len(entries) + 1
         bg = "#262626" if r % 2 else "#2a2a2a"
         row_e = []
         cmd = svc.get("cmd", [])
-        vals = [svc.get("name", ""), svc.get("host") or "127.0.0.1", str(svc.get("port", "")),
-                str(svc.get("interval", 60)), svc.get("url", ""), cmd[0] if cmd else "",
-                " ".join(cmd[1:]), svc.get("cwd", "")]
-        for c, val in enumerate(vals):
+        short = [svc.get("name", ""), svc.get("host") or "127.0.0.1", str(svc.get("port", "")),
+                 str(svc.get("interval", 60)), svc.get("url", "")]
+        for c, val in enumerate(short):
             e = tk.Entry(tree, bg=bg, fg="white", width=widths[c])
-            e.grid(row=r, column=c, pady=2, padx=1)
+            e.grid(row=r, column=c, pady=2, padx=1, sticky="n")
             e.insert(0, val)
             row_e.append(e)
+        for c, val in enumerate([cmd[0] if cmd else "", "\n".join(cmd[1:]), svc.get("cwd", "")], start=5):
+            box = multiline(tree, widths[c], val, bg)
+            box.grid(row=r, column=c, pady=2, padx=1, sticky="n")
+            row_e.append(box)
         var = tk.BooleanVar(value=bool(svc.get("auto_restart", True)))
-        tk.Checkbutton(tree, variable=var, bg="#1e1e1e", fg="white", selectcolor="#2a2a2a").grid(row=r, column=8, pady=2, padx=1)
+        tk.Checkbutton(tree, variable=var, bg="#1e1e1e", fg="white", selectcolor="#2a2a2a").grid(row=r, column=8, pady=2, padx=1, sticky="n")
         row_e.append(var)
         entries.append(row_e)
         return row_e
@@ -1144,28 +1260,28 @@ def open_settings():
     def on_save():
         new_services = []
         for i, row_e in enumerate(entries, start=1):
-            name = row_e[0].get().strip()
+            name = field_value(row_e[0])
             if not name:
-                if not (row_e[2].get().strip() or row_e[5].get().strip() or row_e[6].get().strip()):
+                if not (field_value(row_e[2]) or field_value(row_e[5]) or field_value(row_e[6])):
                     continue
                 messagebox.showerror("Error", f"Row {i}: Name is required")
                 return
             try:
-                port = int(row_e[2].get().strip())
-                interval = max(1, int(row_e[3].get().strip()))
+                port = int(field_value(row_e[2]))
+                interval = max(1, int(field_value(row_e[3])))
             except ValueError:
                 messagebox.showerror("Error", f"{name}: Port and Interval must be numbers")
                 return
-            path = row_e[5].get().strip()
-            args = split_command(row_e[6].get().strip())
+            path = field_value(row_e[5])
+            args = arg_lines(field_value(row_e[6]))
             new_services.append({
                 "name": name,
-                "host": row_e[1].get().strip() or "127.0.0.1",
+                "host": field_value(row_e[1]) or "127.0.0.1",
                 "port": port,
                 "interval": interval,
-                "url": row_e[4].get().strip(),
+                "url": field_value(row_e[4]),
                 "cmd": ([path] + args) if path else args,
-                "cwd": row_e[7].get().strip(),
+                "cwd": field_value(row_e[7]),
                 "auto_restart": bool(row_e[8].get()),
                 "restarts": next((s.get("restarts", 0) for s in services if s["name"] == name), 0),
             })
@@ -1265,6 +1381,7 @@ def open_scanner():
     tk.Button(btns, text="Export CSV + JSON", command=lambda: export_scan(candidates), bg="#333", fg="white").pack(side="left", padx=4)
 
 def loop():
+    roll_day()
     check_all()
     root.after(1000, loop)
 
