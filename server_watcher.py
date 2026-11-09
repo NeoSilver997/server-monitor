@@ -669,7 +669,10 @@ def fetch_dashboard_values(cfg) -> dict[str, str]:
                 g = groups[i]
                 vals[key] = f"{g['name']} {format_bytes(g['private_bytes'])} (n={g['count']})"
     except Exception as e:
-        vals.setdefault("ram_phys", "-")
+        # Blank every Resources tile so a failed poll cannot leave stale values
+        # from a previous successful snapshot on the dashboard.
+        for key in FIELD_GROUPS["Resources"]:
+            vals[key] = "-"
         vals["_resource_error"] = str(e)
     return vals
 
