@@ -643,6 +643,36 @@ def metric_values(data):
         "gpu_count": show(stat.get("gpu_count")),
     }
 
+
+def fetch_dashboard_values(cfg) -> dict[str, str]:
+    """Pull Strata metrics + local resource snapshot for dashboard tiles.
+
+    Soft-fails each source independently so a Strata 401 still leaves
+    resource tiles populated (and vice versa).
+    """
+    vals: dict[str, str] = {}
+    try:
+        vals.update(metric_values(fetch_metrics(cfg["url"])))
+    except Exception as e:
+        vals["_strata_error"] = str(e)
+    try:
+        from resource_collectors import (
+            collect_resource_snapshot,
+            format_bytes,
+            snapshot_display_fields,
+        )
+        snap = collect_resource_snapshot(cfg.get("url"))
+        vals.update(snapshot_display_fields(snap))
+        groups = snap.get("groups") or []
+        for i, key in enumerate(("top_app", "top_app_2", "top_app_3")):
+            if i < len(groups):
+                g = groups[i]
+                vals[key] = f"{g['name']} {format_bytes(g['private_bytes'])} (n={g['count']})"
+    except Exception as e:
+        vals.setdefault("ram_phys", "-")
+        vals["_resource_error"] = str(e)
+    return vals
+
 def clip(text, length=32):
     return text if len(text) <= length else text[:length - 1] + "…"
 
@@ -801,23 +831,34 @@ def open_dashboard():
     results = queue.Queue()
 
     def worker():
-        try:
-            results.put((None, metric_values(fetch_metrics(cfg["url"]))))
-        except Exception as e:
-            results.put((str(e), None))
+        vals = fetch_dashboard_values(cfg)
+        # Prefer strata error for the stamp; fall back to resource error.
+        stamp_msg = vals.get("_strata_error") or vals.get("_resource_error")
+        results.put((stamp_msg, vals))
 
     def render(err, vals):
         up, down = server_counts()
         servers.config(text=f"servers  up {up} / down {down}")
+        updated = set()
+        if vals:
+            for key, text in vals.items():
+                if key.startswith("_"):
+                    continue
+                if key in tiles:
+                    tiles[key].config(text=clip(text))
+                    record_extremes(key, text)
+                    updated.add(key)
+            # Strata failure: blank remaining tiles so they show "-" instead of
+            # stale Strata numbers from a previous successful poll.
+            if vals.get("_strata_error"):
+                for key in tiles:
+                    if key not in updated:
+                        tiles[key].config(text="-")
         if err:
             stamp.config(text=f"fetch failed: {err[:70]}")
             logline(f'[{time.strftime("%H:%M:%S")}] dashboard fetch failed: {err}')
-            return
-        for key, text in vals.items():
-            if key in tiles:
-                tiles[key].config(text=clip(text))
-                record_extremes(key, text)
-        stamp.config(text=f'updated {time.strftime("%H:%M:%S")}')
+        else:
+            stamp.config(text=f'updated {time.strftime("%H:%M:%S")}')
 
     def drain():
         try:
