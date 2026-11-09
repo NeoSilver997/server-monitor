@@ -149,7 +149,7 @@ def _fake_gpu_ok():
 
 def test_snapshot_prefers_gputaskman_for_vram_top(monkeypatch):
     monkeypatch.setattr("resource_collectors.collect_process_groups", lambda top_n=5: _fake_process_groups())
-    monkeypatch.setattr("resource_collectors.collect_gputaskman", lambda: _fake_gpu_ok())
+    monkeypatch.setattr("resource_collectors.collect_gputaskman", lambda **kwargs: _fake_gpu_ok())
     snap = collect_resource_snapshot(top_n=5)
     fields = snapshot_display_fields(snap)
     assert "strata.exe" in fields["vram_top"]
@@ -160,7 +160,7 @@ def test_snapshot_prefers_gputaskman_for_vram_top(monkeypatch):
 
 def test_snapshot_prefers_process_groups_for_top_app(monkeypatch):
     monkeypatch.setattr("resource_collectors.collect_process_groups", lambda top_n=5: _fake_process_groups())
-    monkeypatch.setattr("resource_collectors.collect_gputaskman", lambda: _fake_gpu_ok())
+    monkeypatch.setattr("resource_collectors.collect_gputaskman", lambda **kwargs: _fake_gpu_ok())
     snap = collect_resource_snapshot(top_n=5)
     fields = snapshot_display_fields(snap)
     assert fields["top_app"].startswith("chrome.exe")
@@ -175,7 +175,7 @@ def test_snapshot_soft_fails_when_gputaskman_errors(monkeypatch):
     monkeypatch.setattr("resource_collectors.collect_process_groups", lambda top_n=5: _fake_process_groups())
     monkeypatch.setattr(
         "resource_collectors.collect_gputaskman",
-        lambda: {"error": "gputaskman boom"},
+        lambda **kwargs: {"error": "gputaskman boom"},
     )
     snap = collect_resource_snapshot(top_n=5)
     fields = snapshot_display_fields(snap)
