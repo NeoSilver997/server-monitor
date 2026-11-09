@@ -156,3 +156,43 @@ def collect_gputaskman(timeout: float = 8.0) -> dict[str, Any]:
         return parse_gputaskman(data)
     except Exception as e:
         return {"error": str(e)}
+
+
+def collect_resource_snapshot(
+    strata_url: str | None = None, top_n: int = 5
+) -> dict[str, Any]:
+    """Merge process-group RAM + GpuTaskMan into one UI snapshot.
+
+    ``strata_url`` is accepted for forward compatibility; this task does not
+    HTTP-fetch Strata (leave ``strata`` unused / None).
+    """
+    snap: dict[str, Any] = dict(collect_process_groups(top_n=top_n))
+    gpu_result = collect_gputaskman()
+    if "error" in gpu_result:
+        snap["gpu_error"] = str(gpu_result["error"])
+        snap["gpu"] = {}
+    else:
+        snap["gpu"] = gpu_result
+        snap.pop("gpu_error", None)
+    snap["strata"] = None  # strata_url reserved; no network fetch here
+    _ = strata_url  # silence unused when callers pass it early
+    return snap
+
+
+def snapshot_display_fields(snap: dict) -> dict[str, str]:
+    """Keys must match FIELD_TITLES entries added in Task 4."""
+    groups = snap.get("groups") or []
+    g0 = groups[0] if groups else None
+    gpu = snap.get("gpu") or {}
+    err = snap.get("gpu_error")
+    return {
+        "ram_commit": format_bytes(snap.get("commit_bytes")),
+        "ram_phys": f"{format_bytes(snap.get('ram_used_bytes'))} / {format_bytes(snap.get('ram_total_bytes'))}",
+        "top_app": f"{g0['name']} {format_bytes(g0['private_bytes'])}" if g0 else "-",
+        "top_app_n": str(g0["count"]) if g0 else "-",
+        "vram_used": format_pct(gpu.get("vram_used_bytes"), gpu.get("vram_total_bytes")) if not err else "-",
+        "vram_top": (
+            f"{gpu['top_processes'][0]['name']} {format_bytes(gpu['top_processes'][0]['vram_bytes'])}"
+            if gpu.get("top_processes") else "-"
+        ),
+    }
