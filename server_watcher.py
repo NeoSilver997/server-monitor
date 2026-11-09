@@ -676,6 +676,8 @@ def fetch_dashboard_values(cfg) -> dict[str, str]:
             if i < len(groups):
                 g = groups[i]
                 vals[key] = f"{g['name']} {format_bytes(g['private_bytes'])} (n={g['count']})"
+            else:
+                vals[key] = "-"
     except Exception as e:
         # Blank every Resources tile so a failed poll cannot leave stale values
         # from a previous successful snapshot on the dashboard.
@@ -966,7 +968,13 @@ def refresh_resource_strip():
             disp = snapshot_display_fields(snap)
             root.after(0, lambda d=disp, s=snap: apply_strip(d, s))
         except Exception as e:
-            root.after(0, lambda err=e: strip_vars["stamp"].config(text=f"resources: {err}"[:60]))
+            def blank_strip(err=e):
+                strip_vars["ram"].config(text="RAM -", fg="#0f0")
+                strip_vars["commit"].config(text="Commit -")
+                strip_vars["top"].config(text="Top -")
+                strip_vars["vram"].config(text="VRAM -")
+                strip_vars["stamp"].config(text=f"resources: {err}"[:60])
+            root.after(0, blank_strip)
 
     def apply_strip(disp, snap):
         from resource_collectors import format_bytes as _fmt_bytes

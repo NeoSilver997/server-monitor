@@ -57,7 +57,14 @@ def _commit_charge_windows() -> tuple[int | None, int | None]:
         "ForEach-Object { $_.CookedValue }",
     ]
     try:
-        out = subprocess.check_output(cmd, text=True, timeout=5)
+        kwargs: dict[str, Any] = {
+            "text": True,
+            "timeout": 5,
+            "stderr": subprocess.DEVNULL,
+        }
+        if hasattr(subprocess, "CREATE_NO_WINDOW"):
+            kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+        out = subprocess.check_output(cmd, **kwargs)
         vals = [float(x) for x in out.split() if x.strip()]
         if len(vals) >= 2:
             return int(vals[0]), int(vals[1])
