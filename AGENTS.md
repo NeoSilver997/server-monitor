@@ -48,3 +48,10 @@ plain JSON array of service objects (no wrapper object, no comments, no trailing
 `refresh` (seconds), and `fields` — an ordered list of field keys that is the tile order. Only
 keys that exist in `FIELD_TITLES` in `server_watcher.py` are valid; the order in the list is the
 order of the tiles, so keep it rather than re-sorting it.
+
+The Settings → Dashboard field picker is driven by `FIELD_GROUPS` / `FIELD_TITLES`. The
+`Resources` group covers host RAM / top apps / VRAM process fields (`ram_phys`, `ram_commit`,
+`top_app`, `top_app_2`, `top_app_3`, `vram_used`, `vram_top`, `vram_weights`, `vram_kv`).
+Fresh defaults also include `ram_phys`, `ram_commit`, `top_app`, `vram_used`, and `vram_top`.
+Saved `dashboard_settings.json` files keep their own `fields` list; unknown keys are ignored when
+tiles are built, and new keys appear in the picker (off until ordered).

@@ -31,6 +31,7 @@ FIELD_GROUPS = {
     "conversation_cache": ("cc_enabled", "cc_slots", "cc_parked", "cc_bytes", "cc_evictions", "cc_parks",
                            "cc_restores", "cc_requests", "cc_reused", "cc_hit"),
     "hardware_static": ("gpu_name", "cpu_name", "cores", "threads", "gpu_count"),
+    "Resources": ("ram_phys", "ram_commit", "top_app", "top_app_2", "top_app_3", "vram_used", "vram_top", "vram_weights", "vram_kv"),
 }
 
 FIELD_TITLES = {
@@ -52,9 +53,12 @@ FIELD_TITLES = {
     "cc_evictions": "CC evictions", "cc_parks": "CC parks", "cc_restores": "CC restores",
     "cc_requests": "CC requests", "cc_reused": "CC reused", "cc_hit": "CC hit rate",
     "gpu_name": "GPU", "cpu_name": "CPU model", "cores": "Cores", "threads": "Threads", "gpu_count": "GPU count",
+    "ram_commit": "RAM commit", "ram_phys": "Physical RAM", "top_app": "Top app",
+    "top_app_2": "Top app #2", "top_app_3": "Top app #3",
+    "vram_used": "VRAM used", "vram_top": "VRAM top proc", "vram_weights": "VRAM weights", "vram_kv": "VRAM KV",
 }
 
-DEFAULT_FIELDS = ("speed", "gpu_load", "vram", "temp", "power", "pcie_rx", "cpu", "disk_read", "state", "context")
+DEFAULT_FIELDS = ("speed", "gpu_load", "vram", "temp", "power", "pcie_rx", "cpu", "disk_read", "state", "context", "ram_phys", "ram_commit", "top_app", "vram_used", "vram_top")
 DEFAULT_DASHBOARD = {"url": "http://127.0.0.1:8080/metrics", "opacity": 0.85, "refresh": 30,
                      "fields": list(DEFAULT_FIELDS)}
 
