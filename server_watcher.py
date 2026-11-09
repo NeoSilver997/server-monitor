@@ -920,7 +920,7 @@ def open_dashboard():
 
 root = tk.Tk()
 root.title("Server Watcher")
-root.geometry("560x460")
+root.geometry("720x520")
 root.configure(bg="#1e1e1e")
 
 services = load_settings()
@@ -931,6 +931,57 @@ started_pids = {}
 
 summary = tk.Label(root, text="", fg="#ddd", bg="#1e1e1e", font=("Segoe UI", 9, "bold"))
 summary.pack(anchor="w", padx=10, pady=(8, 0))
+
+resource_strip = tk.Frame(root, bg="#161616", highlightbackground="#333", highlightthickness=1)
+resource_strip.pack(fill="x", padx=10, pady=(6, 0))
+strip_vars = {
+    "ram": tk.Label(resource_strip, text="RAM -", fg="#0f0", bg="#161616", font=("Segoe UI", 9)),
+    "commit": tk.Label(resource_strip, text="Commit -", fg="#ddd", bg="#161616", font=("Segoe UI", 9)),
+    "top": tk.Label(resource_strip, text="Top -", fg="#ddd", bg="#161616", font=("Segoe UI", 9)),
+    "vram": tk.Label(resource_strip, text="VRAM -", fg="#ddd", bg="#161616", font=("Segoe UI", 9)),
+    "stamp": tk.Label(resource_strip, text="", fg="#888", bg="#161616", font=("Segoe UI", 8)),
+}
+for lab in strip_vars.values():
+    lab.pack(side="left", padx=8, pady=4)
+
+def refresh_resource_strip():
+    def work():
+        try:
+            from resource_collectors import (
+                collect_resource_snapshot,
+                snapshot_display_fields,
+            )
+            snap = collect_resource_snapshot(None)
+            disp = snapshot_display_fields(snap)
+            root.after(0, lambda d=disp, s=snap: apply_strip(d, s))
+        except Exception as e:
+            root.after(0, lambda err=e: strip_vars["stamp"].config(text=f"resources: {err}"[:60]))
+
+    def apply_strip(disp, snap):
+        from resource_collectors import format_bytes as _fmt_bytes
+        strip_vars["ram"].config(text=f"RAM {disp.get('ram_phys', '-')}")
+        strip_vars["commit"].config(text=f"Commit {disp.get('ram_commit', '-')}")
+        strip_vars["top"].config(text=f"Top {disp.get('top_app', '-')}")
+        gpu = (snap or {}).get("gpu") or {}
+        vram_u, vram_t = gpu.get("vram_used_bytes"), gpu.get("vram_total_bytes")
+        if vram_u is not None and vram_t:
+            strip_vars["vram"].config(
+                text=f"VRAM {_fmt_bytes(vram_u)}/{_fmt_bytes(vram_t)}"
+            )
+        else:
+            strip_vars["vram"].config(text=f"VRAM {disp.get('vram_used', '-')}")
+        strip_vars["stamp"].config(text=time.strftime("%H:%M:%S"))
+        used, total = snap.get("ram_used_bytes"), snap.get("ram_total_bytes")
+        if used and total and used / total >= 0.85:
+            strip_vars["ram"].config(fg="#f80")
+        else:
+            strip_vars["ram"].config(fg="#0f0")
+
+    threading.Thread(target=work, daemon=True).start()
+    interval_s = max(15, int(load_dashboard().get("refresh", 30) or 30))
+    root.after(interval_s * 1000, refresh_resource_strip)
+
+refresh_resource_strip()
 
 frame = tk.Frame(root, bg="#1e1e1e")
 frame.pack(fill="both", expand=True, padx=10, pady=10)
