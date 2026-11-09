@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import time
@@ -101,3 +102,57 @@ def collect_process_groups(top_n: int = 8) -> dict[str, Any]:
         "groups": group_private_bytes(rows, top_n=top_n),
         "captured_at": time.time(),
     }
+
+
+def parse_gputaskman(data: dict) -> dict[str, Any]:
+    device = data.get("device") or {}
+    vram_used = data.get("vram_used")
+    if vram_used is None:
+        vram_used = device.get("mem_used")
+    vram_total = data.get("vram_total")
+    if vram_total is None:
+        vram_total = device.get("mem_total")
+    gpu_name = data.get("gpu") or device.get("name") or ""
+    temp_c = device.get("temp")
+    power_w = device.get("power_w")
+
+    top_processes: list[dict[str, Any]] = []
+    models: list[Any] = []
+    seen_models: set[str] = set()
+    for row in data.get("processes") or []:
+        name = row.get("name") or "?"
+        pid = row.get("pid")
+        vram_bytes = int(row.get("vram_bytes") or 0)
+        top_processes.append({"name": name, "pid": pid, "vram_bytes": vram_bytes})
+        for key in ("model_files", "installed_models"):
+            for item in row.get(key) or []:
+                label = item if isinstance(item, str) else str(item)
+                if label and label not in seen_models:
+                    seen_models.add(label)
+                    models.append(item)
+
+    top_processes.sort(key=lambda p: p["vram_bytes"], reverse=True)
+    return {
+        "vram_used_bytes": int(vram_used) if vram_used is not None else 0,
+        "vram_total_bytes": int(vram_total) if vram_total is not None else 0,
+        "gpu_name": gpu_name,
+        "temp_c": temp_c,
+        "power_w": power_w,
+        "top_processes": top_processes,
+        "models": models,
+    }
+
+
+def collect_gputaskman(timeout: float = 8.0) -> dict[str, Any]:
+    exe = GPUTASKMAN_EXE
+    if not os.path.isfile(exe):
+        return {"error": f"missing {exe}"}
+    try:
+        kwargs: dict[str, Any] = {"timeout": timeout}
+        if hasattr(subprocess, "CREATE_NO_WINDOW"):
+            kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+        raw = subprocess.check_output([exe, "--json"], **kwargs)
+        data = json.loads(raw.decode("utf-8", "replace"))
+        return parse_gputaskman(data)
+    except Exception as e:
+        return {"error": str(e)}
