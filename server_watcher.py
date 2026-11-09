@@ -59,8 +59,14 @@ FIELD_TITLES = {
 }
 
 DEFAULT_FIELDS = ("speed", "gpu_load", "vram", "temp", "power", "pcie_rx", "cpu", "disk_read", "state", "context", "ram_phys", "ram_commit", "top_app", "vram_used", "vram_top")
-DEFAULT_DASHBOARD = {"url": "http://127.0.0.1:8080/metrics", "opacity": 0.85, "refresh": 30,
-                     "fields": list(DEFAULT_FIELDS)}
+DEFAULT_DASHBOARD = {
+    "url": "http://127.0.0.1:8080/metrics",
+    "opacity": 0.85,
+    "refresh": 30,
+    "fields": list(DEFAULT_FIELDS),
+    "gputaskman_exe": r"C:\AI_Server\Tools\gputaskman\gputaskman-0.3.4-windows-x64\gputaskman.exe",
+    "resource_top_n": 5,
+}
 
 GWL_STYLE, GWL_EXSTYLE = -16, -20
 WS_CAPTION, WS_BORDER, WS_MINIMIZEBOX = 0x00C00000, 0x00800000, 0x00020000
@@ -661,7 +667,9 @@ def fetch_dashboard_values(cfg) -> dict[str, str]:
             format_bytes,
             snapshot_display_fields,
         )
-        snap = collect_resource_snapshot(cfg.get("url"))
+        top_n = int(cfg.get("resource_top_n") or 5)
+        exe = (cfg.get("gputaskman_exe") or "").strip() or None
+        snap = collect_resource_snapshot(cfg.get("url"), top_n=top_n, exe=exe)
         vals.update(snapshot_display_fields(snap))
         groups = snap.get("groups") or []
         for i, key in enumerate(("top_app", "top_app_2", "top_app_3")):
@@ -951,7 +959,10 @@ def refresh_resource_strip():
                 collect_resource_snapshot,
                 snapshot_display_fields,
             )
-            snap = collect_resource_snapshot(None)
+            cfg = load_dashboard()
+            top_n = int(cfg.get("resource_top_n") or 5)
+            exe = (cfg.get("gputaskman_exe") or "").strip() or None
+            snap = collect_resource_snapshot(None, top_n=top_n, exe=exe)
             disp = snapshot_display_fields(snap)
             root.after(0, lambda d=disp, s=snap: apply_strip(d, s))
         except Exception as e:
@@ -1298,6 +1309,24 @@ def open_settings():
         refresh_dashboards()
         logline(f'[{time.strftime("%H:%M:%S")}] dashboard refresh {value}s')
 
+    def apply_gputaskman(_event=None):
+        path = gputaskman_var.get().strip()
+        dash_cfg["gputaskman_exe"] = path
+        save_dashboard(dash_cfg)
+        refresh_dashboards()
+        logline(f'[{time.strftime("%H:%M:%S")}] dashboard gputaskman {path or "(default)"}')
+
+    def apply_top_n(_event=None):
+        try:
+            value = min(15, max(3, int(float(top_n_var.get()))))
+        except ValueError:
+            return
+        dash_cfg["resource_top_n"] = value
+        top_n_var.set(str(value))
+        save_dashboard(dash_cfg)
+        refresh_dashboards()
+        logline(f'[{time.strftime("%H:%M:%S")}] dashboard resource_top_n {value}')
+
     dbox = section("Dashboard", tabs["Dashboard"])
 
     urow = tk.Frame(dbox, bg="#1e1e1e")
@@ -1331,6 +1360,26 @@ def open_settings():
     tk.Label(rrow, text="s", fg="#888", bg="#1e1e1e", font=("Segoe UI", 8)).pack(side="left")
     tk.Label(rrow, text="applies immediately", fg="#888", bg="#1e1e1e",
              font=("Segoe UI", 8)).pack(side="right", padx=8)
+
+    grow = tk.Frame(dbox, bg="#1e1e1e")
+    grow.pack(fill="x", pady=(0, 4))
+    tk.Label(grow, text="GpuTaskMan", fg="#ddd", bg="#1e1e1e", font=("Segoe UI", 9)).pack(side="left")
+    gputaskman_var = tk.StringVar(value=str(dash_cfg.get("gputaskman_exe") or ""))
+    gentry = tk.Entry(grow, textvariable=gputaskman_var, width=44, bg="#2a2a2a", fg="white",
+                      insertbackground="white", font=("Segoe UI", 9))
+    gentry.pack(side="left", padx=(8, 0))
+    gentry.bind("<KeyRelease>", apply_gputaskman)
+
+    trow = tk.Frame(dbox, bg="#1e1e1e")
+    trow.pack(fill="x", pady=(0, 4))
+    tk.Label(trow, text="Resource top N", fg="#ddd", bg="#1e1e1e", font=("Segoe UI", 9)).pack(side="left")
+    top_n_var = tk.StringVar(value=str(int(dash_cfg.get("resource_top_n") or 5)))
+    tspin = tk.Spinbox(trow, from_=3, to=15, textvariable=top_n_var, width=6, bg="#2a2a2a",
+                       fg="white", buttonbackground="#333", insertbackground="white",
+                       font=("Segoe UI", 9), command=apply_top_n)
+    tspin.pack(side="left", padx=(8, 0))
+    tspin.bind("<KeyRelease>", apply_top_n)
+    tk.Label(trow, text="apps (3-15)", fg="#888", bg="#1e1e1e", font=("Segoe UI", 8)).pack(side="left", padx=(4, 0))
 
     panel = section("Dashboard fields (number = tile order, blank or 0 hides)", tabs["Dashboard"], expand=True)
     count_label = tk.Label(panel, text="", fg="#888", bg="#1e1e1e", font=("Segoe UI", 8, "bold"))

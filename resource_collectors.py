@@ -143,8 +143,8 @@ def parse_gputaskman(data: dict) -> dict[str, Any]:
     }
 
 
-def collect_gputaskman(timeout: float = 8.0) -> dict[str, Any]:
-    exe = GPUTASKMAN_EXE
+def collect_gputaskman(timeout: float = 8.0, exe: str | None = None) -> dict[str, Any]:
+    exe = exe or GPUTASKMAN_EXE
     if not os.path.isfile(exe):
         return {"error": f"missing {exe}"}
     try:
@@ -159,15 +159,16 @@ def collect_gputaskman(timeout: float = 8.0) -> dict[str, Any]:
 
 
 def collect_resource_snapshot(
-    strata_url: str | None = None, top_n: int = 5
+    strata_url: str | None = None, top_n: int = 5, exe: str | None = None
 ) -> dict[str, Any]:
     """Merge process-group RAM + GpuTaskMan into one UI snapshot.
 
     ``strata_url`` is accepted for forward compatibility; this task does not
     HTTP-fetch Strata (leave ``strata`` unused / None).
+    ``exe`` overrides ``GPUTASKMAN_EXE`` when Settings supplies a path.
     """
     snap: dict[str, Any] = dict(collect_process_groups(top_n=top_n))
-    gpu_result = collect_gputaskman()
+    gpu_result = collect_gputaskman(exe=exe)
     if "error" in gpu_result:
         snap["gpu_error"] = str(gpu_result["error"])
         snap["gpu"] = {}

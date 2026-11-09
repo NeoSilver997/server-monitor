@@ -115,8 +115,8 @@ A corrupt or missing settings file falls back to the built-in default
     blank service row (host `127.0.0.1`, interval 60, auto restart on) that is written to the
     config on the next Save. A row left completely blank is skipped, and Save names the row
     when Name, Port or Interval is missing or non-numeric.
-  - **Dashboard tab** — **Metrics URL**, **Opacity** (40–100%), **Refresh** (5–600s) and the
-    **Dashboard fields** picker. Each of the 62 fields exposed by `/metrics` (grouped as
+  - **Dashboard tab** — **Metrics URL**, **Opacity** (40–100%), **Refresh** (5–600s),
+    **GpuTaskMan** path, **Resource top N** (3–15), and the **Dashboard fields** picker. Each of the 62 fields exposed by `/metrics` (grouped as
     hardware / engine / live / totals / conversation_cache / hardware_static) has a small number
     box that is its tile order: `1` is the first tile, `2` the second, and so on. Blank or `0`
     hides the field. The picker shows a live `N selected` count. Everything on this tab applies
@@ -137,6 +137,12 @@ A corrupt or missing settings file falls back to the built-in default
   `start-server.js`, `jest-worker`, `babel-loader`); worker rows are shown in red.
   Select one or more and Add Selected to append them to the config
   (interval 60s, no health URL). One row per PID — the lowest listening port wins.
+- **Resources** — the main window shows a compact strip above the service list
+  (`RAM` / `Commit` / `Top` / `VRAM`), refreshed on the dashboard interval (minimum 15s).
+  The Dashboard overlay can also show **Resources** tiles (`ram_phys`, `ram_commit`, `top_app`,
+  `vram_used`, `vram_top`, …) from the same local collectors (`psutil` + GpuTaskMan). Configure
+  the GpuTaskMan exe path and top-N count under Settings → Dashboard. `winproc-tui` is optional
+  for manual deep-dives and is not required for the strip.
 - **Dashboard** — a frameless overlay window that reads `http://127.0.0.1:8080/metrics`
   (JSON) every 30s and shows one tile per field that has a number in the Settings picker. The default
   selection is Speed, GPU load, VRAM, GPU temp, Power, PCIe rx, CPU, Disk read, State and
