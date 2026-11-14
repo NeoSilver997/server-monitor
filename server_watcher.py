@@ -68,6 +68,7 @@ DEFAULT_DASHBOARD = {
     "fields": list(DEFAULT_FIELDS),
     "gputaskman_exe": r"C:\AI_Server\Tools\gputaskman\gputaskman-0.3.4-windows-x64\gputaskman.exe",
     "resource_top_n": 5,
+    "geometry": "",
 }
 
 GWL_STYLE, GWL_EXSTYLE = -16, -20
@@ -76,6 +77,15 @@ WS_EX_APPWINDOW, WS_EX_TOOLWINDOW = 0x00040000, 0x00000080
 SW_MINIMIZE, SW_RESTORE = 2, 9
 SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SWP_FRAMECHANGED = 0x0002, 0x0001, 0x0004, 0x0020
 RDW_INVALIDATE, RDW_UPDATENOW, RDW_ALLCHILDREN = 0x0001, 0x0100, 0x0080
+HTLEFT, HTRIGHT, HTTOP, HTTOPLEFT, HTTOPRIGHT = 10, 11, 12, 13, 14
+HTBOTTOM, HTBOTTOMLEFT, HTBOTTOMRIGHT = 15, 16, 17
+RESIZE_EDGE = 8
+RESIZE_CURSORS = {
+    HTLEFT: "sb_h_double_arrow", HTRIGHT: "sb_h_double_arrow",
+    HTTOP: "sb_v_double_arrow", HTBOTTOM: "sb_v_double_arrow",
+    HTTOPLEFT: "size_nw_se", HTBOTTOMRIGHT: "size_nw_se",
+    HTTOPRIGHT: "size_ne_sw", HTBOTTOMLEFT: "size_ne_sw",
+}
 PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_VM_READ = 0x1000, 0x0010
 
 SCAN_EXES = ("python.exe", "pythonw.exe", "node.exe")
@@ -712,58 +722,161 @@ def server_counts():
     return up, len(row_state) - up
 
 def make_frameless(win):
+    # Drop the system caption (the overlay uses its own title bar) but leave a taskbar button.
     user32 = ctypes.windll.user32
     hwnd = user32.GetParent(win.winfo_id())
     style = user32.GetWindowLongW(hwnd, GWL_STYLE)
-    user32.SetWindowLongW(hwnd, GWL_STYLE, (style & ~WS_CAPTION & ~WS_BORDER) | WS_MINIMIZEBOX)
+    user32.SetWindowLongW(
+        hwnd, GWL_STYLE,
+        (style & ~WS_CAPTION & ~WS_BORDER) | WS_MINIMIZEBOX,
+    )
     exstyle = user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
     user32.SetWindowLongW(hwnd, GWL_EXSTYLE, (exstyle | WS_EX_APPWINDOW) & ~WS_EX_TOOLWINDOW)
     user32.SetWindowPos(hwnd, 0, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED)
     return hwnd
 
+def hit_resize_edge(x, y, width, height):
+    left, right = x < RESIZE_EDGE, x >= width - RESIZE_EDGE
+    top, bottom = y < RESIZE_EDGE, y >= height - RESIZE_EDGE
+    if top and left:
+        return HTTOPLEFT
+    if top and right:
+        return HTTOPRIGHT
+    if bottom and left:
+        return HTBOTTOMLEFT
+    if bottom and right:
+        return HTBOTTOMRIGHT
+    if left:
+        return HTLEFT
+    if right:
+        return HTRIGHT
+    if top:
+        return HTTOP
+    if bottom:
+        return HTBOTTOM
+    return 0
+
 def open_dashboard():
     cfg = load_dashboard()
     win = tk.Toplevel(root)
     win.title("Monitor dashboard")
-    win.geometry("400x310")
+    saved = (cfg.get("geometry") or "").strip()
+    win.geometry(saved or "400x310")
+    win.minsize(TILE_W + 28, TILE_H + CHROME)
+    win.resizable(True, True)
     win._width = 400
-    win.configure(bg="#161616")
+    win.configure(bg="#2a2a2a")
     win.attributes("-alpha", cfg["opacity"])
     win.attributes("-topmost", True)
     win.update()
     hwnd = make_frameless(win)
+    user32 = ctypes.windll.user32
 
     def redraw():
-        ctypes.windll.user32.RedrawWindow(hwnd, None, None,
-                                         RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN)
+        user32.RedrawWindow(hwnd, None, None,
+                            RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN)
 
-    def grab(event):
+    def start_move(event):
+        # Title-bar drag in Tk: SendMessage(HTCAPTION) from a Tk callback can crash.
+        win._rz = None
         win._drag = (event.x_root - win.winfo_x(), event.y_root - win.winfo_y())
 
-    def drag(event):
-        dx, dy = getattr(win, "_drag", (0, 0))
-        win.geometry(f"+{event.x_root - dx}+{event.y_root - dy}")
-        win.update_idletasks()
-        redraw()
-
-    def bind_drag(w):
-        if isinstance(w, (tk.Button, tk.Spinbox)):
+    def on_move(event):
+        origin = getattr(win, "_drag", None)
+        if not origin:
             return
-        w.bind("<Button-1>", grab)
-        w.bind("<B1-Motion>", drag)
-        w.bind("<ButtonRelease-1>", lambda _e: redraw())
-        for c in w.winfo_children():
-            bind_drag(c)
-    top = tk.Frame(win, bg="#161616")
-    top.pack(fill="x", padx=8, pady=(6, 2))
-    tk.Label(top, text="Monitor", fg="#ddd", bg="#161616", font=("Segoe UI", 10, "bold")).pack(side="left")
+        win.geometry(f"+{event.x_root - origin[0]}+{event.y_root - origin[1]}")
+
+    def end_move(_event):
+        if getattr(win, "_drag", None):
+            win._drag = None
+            persist_geometry()
+
+    def start_resize(event, ht=None):
+        if ht is None:
+            ht = hit_resize_edge(event.x, event.y, chrome.winfo_width(), chrome.winfo_height())
+        if not ht:
+            return None
+        win._drag = None
+        win._rz = (
+            ht, event.x_root, event.y_root,
+            win.winfo_x(), win.winfo_y(), win.winfo_width(), win.winfo_height(),
+        )
+        chrome.configure(cursor=RESIZE_CURSORS.get(ht, ""))
+        chrome.grab_set()
+        return "break"
+
+    def on_resize(event):
+        state = getattr(win, "_rz", None)
+        if not state:
+            return
+        ht, x0, y0, wx, wy, ww, wh = state
+        dx, dy = event.x_root - x0, event.y_root - y0
+        x, y, w, h = wx, wy, ww, wh
+        if ht in (HTLEFT, HTTOPLEFT, HTBOTTOMLEFT):
+            x, w = wx + dx, ww - dx
+        if ht in (HTRIGHT, HTTOPRIGHT, HTBOTTOMRIGHT):
+            w = ww + dx
+        if ht in (HTTOP, HTTOPLEFT, HTTOPRIGHT):
+            y, h = wy + dy, wh - dy
+        if ht in (HTBOTTOM, HTBOTTOMLEFT, HTBOTTOMRIGHT):
+            h = wh + dy
+        min_w, min_h = TILE_W + 28, TILE_H + CHROME
+        if w < min_w:
+            if ht in (HTLEFT, HTTOPLEFT, HTBOTTOMLEFT):
+                x = wx + (ww - min_w)
+            w = min_w
+        if h < min_h:
+            if ht in (HTTOP, HTTOPLEFT, HTTOPRIGHT):
+                y = wy + (wh - min_h)
+            h = min_h
+        win.geometry(f"{w}x{h}+{x}+{y}")
+        return "break"
+
+    def end_resize(_event):
+        if getattr(win, "_rz", None):
+            win._rz = None
+            try:
+                chrome.grab_release()
+            except tk.TclError:
+                pass
+            persist_geometry()
+
+    def on_edge_motion(event):
+        if getattr(win, "_rz", None):
+            return on_resize(event)
+        ht = hit_resize_edge(event.x, event.y, chrome.winfo_width(), chrome.winfo_height())
+        chrome.configure(cursor=RESIZE_CURSORS.get(ht, ""))
+
+    chrome = tk.Frame(win, bg="#2a2a2a")
+    chrome.pack(fill="both", expand=True)
+    body = tk.Frame(chrome, bg="#161616")
+    body.pack(fill="both", expand=True, padx=6, pady=6)
+
+    chrome.bind("<Motion>", on_edge_motion)
+    chrome.bind("<Button-1>", start_resize)
+    chrome.bind("<B1-Motion>", on_resize)
+    chrome.bind("<ButtonRelease-1>", end_resize)
+
+    top = tk.Frame(body, bg="#161616")
+    top.pack(fill="x", padx=2, pady=(2, 2))
+    title = tk.Label(top, text="Monitor", fg="#ddd", bg="#161616", font=("Segoe UI", 10, "bold"),
+                     cursor="fleur")
+    title.pack(side="left")
+    # Empty title-bar space is the move handle; buttons on the right stay clickable.
+    handle = tk.Frame(top, bg="#161616", cursor="fleur")
+    handle.pack(side="left", fill="both", expand=True)
     tk.Button(top, text="x", width=3, bg="#333", fg="white",
-             command=lambda: (close_dashboard(win), win.destroy())).pack(side="right")
+             command=lambda: (persist_geometry(), close_dashboard(win), win.destroy())).pack(side="right")
     tk.Button(top, text="-", width=3, bg="#333", fg="white",
-             command=lambda: ctypes.windll.user32.ShowWindow(hwnd, SW_MINIMIZE)).pack(side="right")
+             command=lambda: user32.ShowWindow(hwnd, SW_MINIMIZE)).pack(side="right")
     edit = [False]
     edit_btn = tk.Button(top, text="edit", width=5, bg="#333", fg="white", font=("Segoe UI", 9))
     edit_btn.pack(side="right")
+    for w in (title, handle, top):
+        w.bind("<Button-1>", start_move)
+        w.bind("<B1-Motion>", on_move)
+        w.bind("<ButtonRelease-1>", end_move)
 
     def toggle_edit():
         edit[0] = not edit[0]
@@ -772,14 +885,15 @@ def open_dashboard():
 
     edit_btn.config(command=toggle_edit)
     tiles = {}
-    grid = tk.Frame(win, bg="#161616")
-    grid.pack(fill="both", expand=True, padx=8, pady=2)
+    grid = tk.Frame(body, bg="#161616")
+    grid.pack(fill="both", expand=True, padx=2, pady=2)
 
     def auto_columns(width):
         # Tiles are sized to TILE_W, so the column count follows the window width.
-        return max(1, min(MAX_COLS, (width - 16) // TILE_W))
+        return max(1, min(MAX_COLS, (width - 28) // TILE_W))
 
-    cols_used = [auto_columns(win._width)]
+    cols_used = [auto_columns(win.winfo_width())]
+    win._width = win.winfo_width()
 
     def disable(key):
         cfg["fields"] = [k for k in cfg["fields"] if k != key]
@@ -828,17 +942,18 @@ def open_dashboard():
             tiles[key] = lab
             for w in (cell, head, lab):
                 w.bind("<Double-1>", lambda _e, key=key: disable(key))
-        height = rows * (TILE_H + (EDIT_H if edit[0] else 0)) + CHROME
-        win.geometry(f"{win._width}x{height}")
-        bind_drag(grid)
         redraw()
+        # Keep the last readings after a column reflow; otherwise tiles flash "-".
+        if last_render[0] is not None:
+            render(*last_render[0])
 
-    servers = tk.Label(win, text="-", fg="#ddd", bg="#161616", font=("Segoe UI", 9))
+    servers = tk.Label(body, text="-", fg="#ddd", bg="#161616", font=("Segoe UI", 9))
     servers.pack(anchor="w", padx=8, pady=(2, 0))
-    stamp = tk.Label(win, text="-", fg="#ddd", bg="#161616", font=("Segoe UI", 9))
+    stamp = tk.Label(body, text="-", fg="#ddd", bg="#161616", font=("Segoe UI", 9))
     stamp.pack(anchor="w", padx=8, pady=(0, 2))
 
     results = queue.Queue()
+    last_render = [None]
 
     def worker():
         vals = fetch_dashboard_values(cfg)
@@ -847,6 +962,7 @@ def open_dashboard():
         results.put((stamp_msg, vals))
 
     def render(err, vals):
+        last_render[0] = (err, vals)
         up, down = server_counts()
         servers.config(text=f"servers  up {up} / down {down}")
         updated = set()
@@ -879,6 +995,25 @@ def open_dashboard():
         win.after(1000, drain)
 
     timer = [None]
+    geom_job = [None]
+    reflow_job = [None]
+
+    def persist_geometry():
+        try:
+            if win.winfo_width() < 80 or win.winfo_height() < 80:
+                return
+            cfg["geometry"] = win.winfo_geometry()
+            save_dashboard(cfg)
+        except tk.TclError:
+            pass
+
+    def schedule_save_geometry():
+        if geom_job[0] is not None:
+            try:
+                win.after_cancel(geom_job[0])
+            except tk.TclError:
+                pass
+        geom_job[0] = win.after(250, persist_geometry)
 
     def fetch_now():
         threading.Thread(target=worker, daemon=True).start()
@@ -902,25 +1037,46 @@ def open_dashboard():
 
     apply_settings()
     dashboards.append((win, apply_settings))
-    win.protocol("WM_DELETE_WINDOW", lambda: (close_dashboard(win), win.destroy()))
 
-    row2 = tk.Frame(win, bg="#161616")
+    def on_close():
+        persist_geometry()
+        close_dashboard(win)
+        win.destroy()
+
+    win.protocol("WM_DELETE_WINDOW", on_close)
+
+    row2 = tk.Frame(body, bg="#161616")
     row2.pack(fill="x", padx=8, pady=(0, 6))
     tk.Button(row2, text="refresh now", bg="#333", fg="white", font=("Segoe UI", 8),
              command=fetch_now).pack(side="left")
+    grip = tk.Label(row2, text="◢", fg="#bbb", bg="#161616", font=("Segoe UI", 12),
+                    cursor="size_nw_se")
+    grip.pack(side="right")
+    grip.bind("<Button-1>", lambda e: start_resize(e, HTBOTTOMRIGHT))
+    grip.bind("<B1-Motion>", on_resize)
+    grip.bind("<ButtonRelease-1>", end_resize)
 
     def on_configure(event):
-        # Only rebuild when the width change actually alters the column count, otherwise
-        # the geometry() call in build_tiles would re-fire Configure and recurse.
-        if event.widget is not win or event.width <= 1 or event.width == win._width:
+        # Reflow columns when the width crosses a tile threshold. Do not force
+        # geometry here — that used to fight the user's resize and recurse.
+        if event.widget is not win or event.width <= 1:
+            return
+        if event.width == win._width:
+            schedule_save_geometry()
             return
         win._width = event.width
-        if auto_columns(event.width) != cols_used[0]:
-            cols_used[0] = auto_columns(event.width)
-            build_tiles()
+        cols = auto_columns(event.width)
+        if cols != cols_used[0]:
+            cols_used[0] = cols
+            if reflow_job[0] is not None:
+                try:
+                    win.after_cancel(reflow_job[0])
+                except tk.TclError:
+                    pass
+            reflow_job[0] = win.after(80, build_tiles)
+        schedule_save_geometry()
 
     win.bind("<Configure>", on_configure)
-    bind_drag(win)
     tick()
     drain()
     return win
@@ -928,6 +1084,7 @@ def open_dashboard():
 root = tk.Tk()
 root.title("Server Watcher")
 root.geometry("720x520")
+root.minsize(640, 400)
 root.configure(bg="#1e1e1e")
 
 services = load_settings()
@@ -999,8 +1156,37 @@ def refresh_resource_strip():
 
 refresh_resource_strip()
 
-frame = tk.Frame(root, bg="#1e1e1e")
-frame.pack(fill="both", expand=True, padx=10, pady=10)
+btn_frame = tk.Frame(root, bg="#1e1e1e")
+btn_frame.pack(side="bottom", fill="x", pady=(4, 6), padx=10)
+
+paned = tk.PanedWindow(root, orient="vertical", bg="#1e1e1e", sashwidth=6,
+                      sashrelief="flat", bd=0, opaqueresize=True)
+paned.pack(fill="both", expand=True, padx=10, pady=(10, 0))
+
+svc_holder = tk.Frame(paned, bg="#1e1e1e")
+svc_scroll = tk.Scrollbar(svc_holder)
+svc_canvas = tk.Canvas(svc_holder, bg="#1e1e1e", highlightthickness=0, bd=0)
+svc_scroll.config(command=svc_canvas.yview)
+svc_canvas.config(yscrollcommand=svc_scroll.set)
+svc_scroll.pack(side="right", fill="y")
+svc_canvas.pack(side="left", fill="both", expand=True)
+frame = tk.Frame(svc_canvas, bg="#1e1e1e")
+_svc_win = svc_canvas.create_window((0, 0), window=frame, anchor="nw")
+
+def _sync_svc_scroll(_event=None):
+    svc_canvas.configure(scrollregion=svc_canvas.bbox("all") or (0, 0, 0, 0))
+    svc_canvas.itemconfigure(_svc_win, width=max(1, svc_canvas.winfo_width()))
+
+frame.bind("<Configure>", _sync_svc_scroll)
+svc_canvas.bind("<Configure>", _sync_svc_scroll)
+
+def _svc_wheel(event):
+    delta = int(-1 * (event.delta / 120)) if event.delta else 0
+    svc_canvas.yview_scroll(delta, "units")
+    return "break"
+
+svc_canvas.bind("<MouseWheel>", _svc_wheel)
+frame.bind("<MouseWheel>", _svc_wheel)
 
 ROW_WIDTHS = (14, 12, 11, 7)
 ROW_HEADERS = ("Name", "Status", "Last check", "Port")
@@ -1061,7 +1247,8 @@ def rebuild_rows():
 rebuild_rows()
 
 log = scrolledtext.ScrolledText(root, height=10, bg="#111", fg="#0f0", insertbackground="white")
-log.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+paned.add(svc_holder, minsize=120, stretch="always")
+paned.add(log, minsize=80, stretch="always")
 
 def logline(msg):
     log.insert("end", msg + "\n")
@@ -1553,8 +1740,10 @@ def loop():
     check_all()
     root.after(1000, loop)
 
-btn_frame = tk.Frame(root, bg="#1e1e1e")
-btn_frame.pack(pady=(0, 6))
+if os.environ.get("WINSERVER_OPEN_DASHBOARD") == "1":
+    root.after(400, open_dashboard)
+
+
 tk.Button(btn_frame, text="Check Now", command=check_all, bg="#333", fg="white").pack(side="left", padx=4)
 tk.Button(btn_frame, text="Settings", command=open_settings, bg="#333", fg="white").pack(side="left", padx=4)
 tk.Button(btn_frame, text="Scan", command=open_scanner, bg="#333", fg="white").pack(side="left", padx=4)

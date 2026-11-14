@@ -148,22 +148,21 @@ A corrupt or missing settings file falls back to the built-in default
   selection is Speed, GPU load, VRAM, GPU temp, Power, PCIe rx, CPU, Disk read, State and
   Context used. VRAM and RAM show usage as a percentage of the total. Tiles are laid out in a
   grid that auto-arranges to fit the window width — the column count follows the width
-  (1–6 columns, one tile per 190px), so resizing reflows the tiles and the window height
-  adjusts to the number of rows. `edit` in the title bar adds `up` / `dn` buttons to each tile
+  (1–6 columns, one tile per 190px), so resizing the window reflows the tiles. `edit` in the title bar adds `up` / `dn` buttons to each tile
   header to reorder them; the order is the `fields` list in `dashboard_settings.json`, so it
   survives restarts and is the same order the number boxes in the Settings picker show.
   Below the tiles: a `servers up N / down N` line (mirrors the main window status)
   and an `updated HH:MM:SS` line that shows the fetch error if the endpoint is unreachable.
   Long values (model name, GPU name) are truncated to fit the tile. The window is always on
-  top. The title bar is removed with Win32 style flags but it keeps a taskbar button, so the
-  `-` button minimizes it to the taskbar. Drag anywhere, including across the tiles, to move
-  it — the window is force-repainted after each move so the tiles redraw instead of leaving
-  stale pixels. The bottom row is buttons only — **refresh now** fetches straight away instead
+  top. The system title bar is removed with Win32 style flags but it keeps a taskbar button, so the
+  `-` button minimizes it to the taskbar. Drag the "Monitor" title bar to move the overlay
+  (tiles themselves are not a drag handle, so a click on a tile is not stolen). Resize from
+  the shaded edges, the corners, or the bottom-right grip; size and position are saved to
+  `dashboard_settings.json`. The bottom row has **refresh now**, which fetches straight away instead
   of waiting for the next tick. Opacity, the refresh interval, the URL and the field selection
   live on the Settings Dashboard tab and are saved to `dashboard_settings.json` as soon as they
   change, which re-arms the timer for every open dashboard. Double-click a tile to drop it from the
-  dashboard — the selection is saved (its number in the Settings picker is cleared) and the window
-  shrinks. Each day the dashboard tracks the max and min seen for every tile and stores them
+  dashboard — the selection is saved (its number in the Settings picker is cleared). Each day the dashboard tracks the max and min seen for every tile and stores them
   per date in `daily_extremes.json`; the record resets on the first reading of a new day. When
   a value hits a new daily max, the log gets a line such as
   `14:02:11 GPU load daily max 80%`. Only numeric values are tracked, so text fields like
