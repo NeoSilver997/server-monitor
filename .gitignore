@@ -8,3 +8,5 @@ scan_export.csv
 scan_export.json
 service_logs/
 __pycache__/
+
+.worktrees/

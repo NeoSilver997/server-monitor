@@ -45,6 +45,28 @@ plain JSON array of service objects (no wrapper object, no comments, no trailing
 ## Dashboard config
 
 `dashboard_settings.json` is an object: `url` (the metrics endpoint), `opacity` (0.4–1.0),
-`refresh` (seconds), and `fields` — an ordered list of field keys that is the tile order. Only
-keys that exist in `FIELD_TITLES` in `server_watcher.py` are valid; the order in the list is the
-order of the tiles, so keep it rather than re-sorting it.
+`refresh` (seconds), `fields` — an ordered list of field keys that is the tile order, plus
+resource knobs `gputaskman_exe` (path to GpuTaskMan) and `resource_top_n` (how many top apps
+to keep in the snapshot, default 5). Only keys that exist in `FIELD_TITLES` in
+`server_watcher.py` are valid for `fields`; the order in the list is the order of the tiles,
+so keep it rather than re-sorting it.
+
+The Settings → Dashboard field picker is driven by `FIELD_GROUPS` / `FIELD_TITLES`. The
+`Resources` group covers host RAM / top apps / VRAM process fields (`ram_phys`, `ram_commit`,
+`top_app`, `top_app_2`, `top_app_3`, `vram_used`, `vram_top`, `vram_weights`, `vram_kv`).
+Fresh defaults also include `ram_phys`, `ram_commit`, `top_app`, `vram_used`, and `vram_top`.
+Saved `dashboard_settings.json` files keep their own `fields` list; unknown keys are ignored when
+tiles are built, and new keys appear in the picker (off until ordered).
+
+### Resource tools and restart rules
+
+- Default GpuTaskMan path:
+  `C:\AI_Server\Tools\gputaskman\gputaskman-0.3.4-windows-x64\gputaskman.exe`
+  Override via Settings → Dashboard → GpuTaskMan, or set env `GPUTASKMAN_EXE`.
+- Host RAM / top apps use `psutil` + Windows commit counters (`resource_collectors.py`).
+- `winproc-tui` is optional for deeper manual investigation. It is **not** required for the
+  main-window resource strip or dashboard Resources tiles.
+- Editing `dashboard_settings.json` (or `server_watcher_settings.json`) on disk only takes
+  effect after the watcher is **restarted**. Changes made through the Settings UI write the
+  same file and apply immediately (dashboards refresh; the strip picks up new knobs on its
+  next refresh cycle).

@@ -31,6 +31,7 @@ FIELD_GROUPS = {
     "conversation_cache": ("cc_enabled", "cc_slots", "cc_parked", "cc_bytes", "cc_evictions", "cc_parks",
                            "cc_restores", "cc_requests", "cc_reused", "cc_hit"),
     "hardware_static": ("gpu_name", "cpu_name", "cores", "threads", "gpu_count"),
+    "Resources": ("ram_phys", "ram_commit", "top_app", "top_app_2", "top_app_3", "vram_used", "vram_top", "vram_weights", "vram_kv"),
 }
 
 FIELD_TITLES = {
@@ -52,11 +53,20 @@ FIELD_TITLES = {
     "cc_evictions": "CC evictions", "cc_parks": "CC parks", "cc_restores": "CC restores",
     "cc_requests": "CC requests", "cc_reused": "CC reused", "cc_hit": "CC hit rate",
     "gpu_name": "GPU", "cpu_name": "CPU model", "cores": "Cores", "threads": "Threads", "gpu_count": "GPU count",
+    "ram_commit": "RAM commit", "ram_phys": "Physical RAM", "top_app": "Top app",
+    "top_app_2": "Top app #2", "top_app_3": "Top app #3",
+    "vram_used": "VRAM used", "vram_top": "VRAM top proc", "vram_weights": "VRAM weights", "vram_kv": "VRAM KV",
 }
 
-DEFAULT_FIELDS = ("speed", "gpu_load", "vram", "temp", "power", "pcie_rx", "cpu", "disk_read", "state", "context")
-DEFAULT_DASHBOARD = {"url": "http://127.0.0.1:8080/metrics", "opacity": 0.85, "refresh": 30,
-                     "fields": list(DEFAULT_FIELDS)}
+DEFAULT_FIELDS = ("speed", "gpu_load", "vram", "temp", "power", "pcie_rx", "cpu", "disk_read", "state", "context", "ram_phys", "ram_commit", "top_app", "vram_used", "vram_top")
+DEFAULT_DASHBOARD = {
+    "url": "http://127.0.0.1:8080/metrics",
+    "opacity": 0.85,
+    "refresh": 30,
+    "fields": list(DEFAULT_FIELDS),
+    "gputaskman_exe": r"C:\AI_Server\Tools\gputaskman\gputaskman-0.3.4-windows-x64\gputaskman.exe",
+    "resource_top_n": 5,
+}
 
 GWL_STYLE, GWL_EXSTYLE = -16, -20
 WS_CAPTION, WS_BORDER, WS_MINIMIZEBOX = 0x00C00000, 0x00800000, 0x00020000
@@ -639,6 +649,43 @@ def metric_values(data):
         "gpu_count": show(stat.get("gpu_count")),
     }
 
+
+def fetch_dashboard_values(cfg) -> dict[str, str]:
+    """Pull Strata metrics + local resource snapshot for dashboard tiles.
+
+    Soft-fails each source independently so a Strata 401 still leaves
+    resource tiles populated (and vice versa).
+    """
+    vals: dict[str, str] = {}
+    try:
+        vals.update(metric_values(fetch_metrics(cfg["url"])))
+    except Exception as e:
+        vals["_strata_error"] = str(e)
+    try:
+        from resource_collectors import (
+            collect_resource_snapshot,
+            format_bytes,
+            snapshot_display_fields,
+        )
+        top_n = int(cfg.get("resource_top_n") or 5)
+        exe = (cfg.get("gputaskman_exe") or "").strip() or None
+        snap = collect_resource_snapshot(cfg.get("url"), top_n=top_n, exe=exe)
+        vals.update(snapshot_display_fields(snap))
+        groups = snap.get("groups") or []
+        for i, key in enumerate(("top_app", "top_app_2", "top_app_3")):
+            if i < len(groups):
+                g = groups[i]
+                vals[key] = f"{g['name']} {format_bytes(g['private_bytes'])} (n={g['count']})"
+            else:
+                vals[key] = "-"
+    except Exception as e:
+        # Blank every Resources tile so a failed poll cannot leave stale values
+        # from a previous successful snapshot on the dashboard.
+        for key in FIELD_GROUPS["Resources"]:
+            vals[key] = "-"
+        vals["_resource_error"] = str(e)
+    return vals
+
 def clip(text, length=32):
     return text if len(text) <= length else text[:length - 1] + "…"
 
@@ -797,23 +844,34 @@ def open_dashboard():
     results = queue.Queue()
 
     def worker():
-        try:
-            results.put((None, metric_values(fetch_metrics(cfg["url"]))))
-        except Exception as e:
-            results.put((str(e), None))
+        vals = fetch_dashboard_values(cfg)
+        # Prefer strata error for the stamp; fall back to resource error.
+        stamp_msg = vals.get("_strata_error") or vals.get("_resource_error")
+        results.put((stamp_msg, vals))
 
     def render(err, vals):
         up, down = server_counts()
         servers.config(text=f"servers  up {up} / down {down}")
+        updated = set()
+        if vals:
+            for key, text in vals.items():
+                if key.startswith("_"):
+                    continue
+                if key in tiles:
+                    tiles[key].config(text=clip(text))
+                    record_extremes(key, text)
+                    updated.add(key)
+            # Strata failure: blank remaining tiles so they show "-" instead of
+            # stale Strata numbers from a previous successful poll.
+            if vals.get("_strata_error"):
+                for key in tiles:
+                    if key not in updated:
+                        tiles[key].config(text="-")
         if err:
             stamp.config(text=f"fetch failed: {err[:70]}")
             logline(f'[{time.strftime("%H:%M:%S")}] dashboard fetch failed: {err}')
-            return
-        for key, text in vals.items():
-            if key in tiles:
-                tiles[key].config(text=clip(text))
-                record_extremes(key, text)
-        stamp.config(text=f'updated {time.strftime("%H:%M:%S")}')
+        else:
+            stamp.config(text=f'updated {time.strftime("%H:%M:%S")}')
 
     def drain():
         try:
@@ -872,7 +930,7 @@ def open_dashboard():
 
 root = tk.Tk()
 root.title("Server Watcher")
-root.geometry("560x460")
+root.geometry("720x520")
 root.configure(bg="#1e1e1e")
 
 services = load_settings()
@@ -883,6 +941,66 @@ started_pids = {}
 
 summary = tk.Label(root, text="", fg="#ddd", bg="#1e1e1e", font=("Segoe UI", 9, "bold"))
 summary.pack(anchor="w", padx=10, pady=(8, 0))
+
+resource_strip = tk.Frame(root, bg="#161616", highlightbackground="#333", highlightthickness=1)
+resource_strip.pack(fill="x", padx=10, pady=(6, 0))
+strip_vars = {
+    "ram": tk.Label(resource_strip, text="RAM -", fg="#0f0", bg="#161616", font=("Segoe UI", 9)),
+    "commit": tk.Label(resource_strip, text="Commit -", fg="#ddd", bg="#161616", font=("Segoe UI", 9)),
+    "top": tk.Label(resource_strip, text="Top -", fg="#ddd", bg="#161616", font=("Segoe UI", 9)),
+    "vram": tk.Label(resource_strip, text="VRAM -", fg="#ddd", bg="#161616", font=("Segoe UI", 9)),
+    "stamp": tk.Label(resource_strip, text="", fg="#888", bg="#161616", font=("Segoe UI", 8)),
+}
+for lab in strip_vars.values():
+    lab.pack(side="left", padx=8, pady=4)
+
+def refresh_resource_strip():
+    def work():
+        try:
+            from resource_collectors import (
+                collect_resource_snapshot,
+                snapshot_display_fields,
+            )
+            cfg = load_dashboard()
+            top_n = int(cfg.get("resource_top_n") or 5)
+            exe = (cfg.get("gputaskman_exe") or "").strip() or None
+            snap = collect_resource_snapshot(None, top_n=top_n, exe=exe)
+            disp = snapshot_display_fields(snap)
+            root.after(0, lambda d=disp, s=snap: apply_strip(d, s))
+        except Exception as e:
+            def blank_strip(err=e):
+                strip_vars["ram"].config(text="RAM -", fg="#0f0")
+                strip_vars["commit"].config(text="Commit -")
+                strip_vars["top"].config(text="Top -")
+                strip_vars["vram"].config(text="VRAM -")
+                strip_vars["stamp"].config(text=f"resources: {err}"[:60])
+            root.after(0, blank_strip)
+
+    def apply_strip(disp, snap):
+        from resource_collectors import format_bytes as _fmt_bytes
+        strip_vars["ram"].config(text=f"RAM {disp.get('ram_phys', '-')}")
+        strip_vars["commit"].config(text=f"Commit {disp.get('ram_commit', '-')}")
+        strip_vars["top"].config(text=f"Top {disp.get('top_app', '-')}")
+        gpu = (snap or {}).get("gpu") or {}
+        vram_u, vram_t = gpu.get("vram_used_bytes"), gpu.get("vram_total_bytes")
+        if vram_u is not None and vram_t:
+            strip_vars["vram"].config(
+                text=f"VRAM {_fmt_bytes(vram_u)}/{_fmt_bytes(vram_t)}"
+            )
+        else:
+            strip_vars["vram"].config(text=f"VRAM {disp.get('vram_used', '-')}")
+        strip_vars["stamp"].config(text=time.strftime("%H:%M:%S"))
+        used, total = snap.get("ram_used_bytes"), snap.get("ram_total_bytes")
+        if used and total and used / total >= 0.85:
+            strip_vars["ram"].config(fg="#f80")
+        else:
+            strip_vars["ram"].config(fg="#0f0")
+
+    threading.Thread(target=work, daemon=True).start()
+    interval_s = max(15, int(load_dashboard().get("refresh", 30) or 30))
+    root.after(interval_s * 1000, refresh_resource_strip)
+
+refresh_resource_strip()
 
 frame = tk.Frame(root, bg="#1e1e1e")
 frame.pack(fill="both", expand=True, padx=10, pady=10)
@@ -1199,6 +1317,24 @@ def open_settings():
         refresh_dashboards()
         logline(f'[{time.strftime("%H:%M:%S")}] dashboard refresh {value}s')
 
+    def apply_gputaskman(_event=None):
+        path = gputaskman_var.get().strip()
+        dash_cfg["gputaskman_exe"] = path
+        save_dashboard(dash_cfg)
+        refresh_dashboards()
+        logline(f'[{time.strftime("%H:%M:%S")}] dashboard gputaskman {path or "(default)"}')
+
+    def apply_top_n(_event=None):
+        try:
+            value = min(15, max(3, int(float(top_n_var.get()))))
+        except ValueError:
+            return
+        dash_cfg["resource_top_n"] = value
+        top_n_var.set(str(value))
+        save_dashboard(dash_cfg)
+        refresh_dashboards()
+        logline(f'[{time.strftime("%H:%M:%S")}] dashboard resource_top_n {value}')
+
     dbox = section("Dashboard", tabs["Dashboard"])
 
     urow = tk.Frame(dbox, bg="#1e1e1e")
@@ -1232,6 +1368,26 @@ def open_settings():
     tk.Label(rrow, text="s", fg="#888", bg="#1e1e1e", font=("Segoe UI", 8)).pack(side="left")
     tk.Label(rrow, text="applies immediately", fg="#888", bg="#1e1e1e",
              font=("Segoe UI", 8)).pack(side="right", padx=8)
+
+    grow = tk.Frame(dbox, bg="#1e1e1e")
+    grow.pack(fill="x", pady=(0, 4))
+    tk.Label(grow, text="GpuTaskMan", fg="#ddd", bg="#1e1e1e", font=("Segoe UI", 9)).pack(side="left")
+    gputaskman_var = tk.StringVar(value=str(dash_cfg.get("gputaskman_exe") or ""))
+    gentry = tk.Entry(grow, textvariable=gputaskman_var, width=44, bg="#2a2a2a", fg="white",
+                      insertbackground="white", font=("Segoe UI", 9))
+    gentry.pack(side="left", padx=(8, 0))
+    gentry.bind("<KeyRelease>", apply_gputaskman)
+
+    trow = tk.Frame(dbox, bg="#1e1e1e")
+    trow.pack(fill="x", pady=(0, 4))
+    tk.Label(trow, text="Resource top N", fg="#ddd", bg="#1e1e1e", font=("Segoe UI", 9)).pack(side="left")
+    top_n_var = tk.StringVar(value=str(int(dash_cfg.get("resource_top_n") or 5)))
+    tspin = tk.Spinbox(trow, from_=3, to=15, textvariable=top_n_var, width=6, bg="#2a2a2a",
+                       fg="white", buttonbackground="#333", insertbackground="white",
+                       font=("Segoe UI", 9), command=apply_top_n)
+    tspin.pack(side="left", padx=(8, 0))
+    tspin.bind("<KeyRelease>", apply_top_n)
+    tk.Label(trow, text="apps (3-15)", fg="#888", bg="#1e1e1e", font=("Segoe UI", 8)).pack(side="left", padx=(4, 0))
 
     panel = section("Dashboard fields (number = tile order, blank or 0 hides)", tabs["Dashboard"], expand=True)
     count_label = tk.Label(panel, text="", fg="#888", bg="#1e1e1e", font=("Segoe UI", 8, "bold"))
