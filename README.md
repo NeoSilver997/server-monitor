@@ -115,7 +115,7 @@ A corrupt or missing settings file falls back to the built-in default
     blank service row (host `127.0.0.1`, interval 60, auto restart on) that is written to the
     config on the next Save. A row left completely blank is skipped, and Save names the row
     when Name, Port or Interval is missing or non-numeric.
-  - **Dashboard tab** — **Metrics URL**, **Opacity** (40–100%), **Refresh** (5–600s),
+  - **Dashboard tab** — **Metrics URL**, **Metrics API key** (optional, stored locally, sent as `Authorization: Bearer` for Strata `/metrics`), **Opacity** (40–100%), **Refresh** (5–600s),
     **GpuTaskMan** path, **Resource top N** (3–15), and the **Dashboard fields** picker. Each of the 62 fields exposed by `/metrics` (grouped as
     hardware / engine / live / totals / conversation_cache / hardware_static) has a small number
     box that is its tile order: `1` is the first tile, `2` the second, and so on. Blank or `0`
@@ -144,7 +144,7 @@ A corrupt or missing settings file falls back to the built-in default
   the GpuTaskMan exe path and top-N count under Settings → Dashboard. `winproc-tui` is optional
   for manual deep-dives and is not required for the strip.
 - **Dashboard** — a frameless overlay window that reads `http://127.0.0.1:8080/metrics`
-  (JSON) every 30s and shows one tile per field that has a number in the Settings picker. The default
+  (JSON) every 30s, with an optional API key from Settings if the endpoint requires it, and shows one tile per field that has a number in the Settings picker. The default
   selection is Speed, GPU load, VRAM, GPU temp, Power, PCIe rx, CPU, Disk read, State and
   Context used. VRAM and RAM show usage as a percentage of the total. Tiles are laid out in a
   grid that auto-arranges to fit the window width — the column count follows the width

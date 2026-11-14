@@ -1,5 +1,6 @@
 import socket, subprocess, time, json, os, csv, ctypes, queue, threading, shutil, re, webbrowser
 import urllib.request, urllib.error
+from metrics_client import fetch_metrics
 import tkinter as tk
 from tkinter import scrolledtext, messagebox, ttk
 
@@ -61,6 +62,7 @@ FIELD_TITLES = {
 DEFAULT_FIELDS = ("speed", "gpu_load", "vram", "temp", "power", "pcie_rx", "cpu", "disk_read", "state", "context", "ram_phys", "ram_commit", "top_app", "vram_used", "vram_top")
 DEFAULT_DASHBOARD = {
     "url": "http://127.0.0.1:8080/metrics",
+    "api_key": "",
     "opacity": 0.85,
     "refresh": 30,
     "fields": list(DEFAULT_FIELDS),
@@ -547,11 +549,6 @@ def record_extremes(key, text):
     if changed:
         save_daily(daily)
 
-def fetch_metrics(url, timeout=3.0):
-    req = urllib.request.Request(url, method="GET", headers={"Accept": "application/json"})
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        return json.loads(resp.read().decode("utf-8", "replace"))
-
 def metric_values(data):
     hw = data.get("hardware") or {}
     live = data.get("live") or {}
@@ -658,7 +655,7 @@ def fetch_dashboard_values(cfg) -> dict[str, str]:
     """
     vals: dict[str, str] = {}
     try:
-        vals.update(metric_values(fetch_metrics(cfg["url"])))
+        vals.update(metric_values(fetch_metrics(cfg["url"], cfg.get("api_key", ""))))
     except Exception as e:
         vals["_strata_error"] = str(e)
     try:
@@ -1306,6 +1303,12 @@ def open_settings():
         refresh_dashboards()
         logline(f'[{time.strftime("%H:%M:%S")}] dashboard url {url}')
 
+    def apply_api_key(_event=None):
+        dash_cfg["api_key"] = api_key_var.get().strip()
+        save_dashboard(dash_cfg)
+        refresh_dashboards()
+        logline(f'[{time.strftime("%H:%M:%S")}] dashboard api key {"set" if dash_cfg["api_key"] else "cleared"}')
+
     def apply_refresh(_event=None):
         try:
             value = max(1, int(float(refresh_var.get())))
@@ -1345,6 +1348,15 @@ def open_settings():
                          insertbackground="white", font=("Segoe UI", 9))
     url_entry.pack(side="left", padx=(8, 0))
     url_entry.bind("<KeyRelease>", apply_url)
+
+    krow = tk.Frame(dbox, bg="#1e1e1e")
+    krow.pack(fill="x", pady=(0, 4))
+    tk.Label(krow, text="Metrics API key", fg="#ddd", bg="#1e1e1e", font=("Segoe UI", 9)).pack(side="left")
+    api_key_var = tk.StringVar(value=dash_cfg.get("api_key") or "")
+    api_key_entry = tk.Entry(krow, textvariable=api_key_var, width=44, bg="#2a2a2a", fg="white",
+                             insertbackground="white", font=("Segoe UI", 9), show="*")
+    api_key_entry.pack(side="left", padx=(8, 0))
+    api_key_entry.bind("<KeyRelease>", apply_api_key)
 
     drow = tk.Frame(dbox, bg="#1e1e1e")
     drow.pack(fill="x", pady=(0, 4))

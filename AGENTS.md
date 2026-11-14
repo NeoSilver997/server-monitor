@@ -44,10 +44,10 @@ plain JSON array of service objects (no wrapper object, no comments, no trailing
 
 ## Dashboard config
 
-`dashboard_settings.json` is an object: `url` (the metrics endpoint), `opacity` (0.4–1.0),
+`dashboard_settings.json` is an object: `url` (the metrics endpoint), `api_key` (optional Strata API key, sent as `Authorization: Bearer`; leave empty when the endpoint is open), `opacity` (0.4–1.0),
 `refresh` (seconds), `fields` — an ordered list of field keys that is the tile order, plus
 resource knobs `gputaskman_exe` (path to GpuTaskMan) and `resource_top_n` (how many top apps
-to keep in the snapshot, default 5). Only keys that exist in `FIELD_TITLES` in
+to keep in the snapshot, default 5). Never commit a real `api_key` — the file is gitignored. Only keys that exist in `FIELD_TITLES` in
 `server_watcher.py` are valid for `fields`; the order in the list is the order of the tiles,
 so keep it rather than re-sorting it.
 

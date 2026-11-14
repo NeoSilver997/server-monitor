@@ -17,6 +17,7 @@ import sys
 import time
 import urllib.parse
 import urllib.request
+from metrics_client import fetch_metrics
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CONFIG_FILE = os.path.join(HERE, "server_watcher_settings.json")
@@ -37,7 +38,7 @@ DEFAULT_SERVICES = [
      "cmd": ["python3", "-m", "http.server", "8080"], "cwd": "", "auto_restart": True, "restarts": 0},
 ]
 
-DEFAULT_DASHBOARD = {"url": "http://127.0.0.1:8080/metrics", "refresh": 30,
+DEFAULT_DASHBOARD = {"url": "http://127.0.0.1:8080/metrics", "api_key": "", "refresh": 30,
                      "fields": ["speed", "gpu_load", "vram", "temp", "power", "pcie_rx", "cpu",
                                 "disk_read", "state", "context"]}
 
@@ -308,10 +309,6 @@ def export(base, headers, rows):
     return base + ".csv", base + ".json"
 
 
-def fetch_metrics(url, timeout=3.0):
-    req = urllib.request.Request(url, method="GET", headers={"Accept": "application/json"})
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        return json.loads(resp.read().decode("utf-8", "replace"))
 
 
 def main():
@@ -384,7 +381,7 @@ def main():
                 url = urllib.parse.urlunparse(parsed._replace(netloc=f"{gateway}:{parsed.port}"))
         while True:
             try:
-                data = fetch_metrics(url)
+                data = fetch_metrics(url, cfg.get("api_key", ""))
             except Exception as e:
                 print(f"fetch failed: {e}")
                 return 1
